@@ -10,6 +10,9 @@ public partial class SettingsForm : Form
     private readonly AppSettings _settings;
     private readonly SyncState _syncState;
     private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 3000 };
+    private NotifyIcon? _notifyIcon;
+    private ContextMenuStrip? _trayMenu;
+    private bool _allowExit;
 
     // Parameterless constructor is required for Visual Studio designer support.
     public SettingsForm() : this(new AppSettings(), new SyncState())
@@ -30,10 +33,83 @@ public partial class SettingsForm : Form
             return;
         }
 
+        SetupBackgroundMode();
         LoadSettingsIntoUi();
         _statusTimer.Tick += (_, _) => UpdateSyncStatus();
         _statusTimer.Start();
         UpdateSyncStatus();
+    }
+
+    private void SetupBackgroundMode()
+    {
+        _trayMenu = new ContextMenuStrip();
+        _trayMenu.Items.Add("Show", null, (_, _) => ShowFromTray());
+        _trayMenu.Items.Add("Hide", null, (_, _) => HideToTray());
+        _trayMenu.Items.Add("-");
+        _trayMenu.Items.Add("Exit", null, (_, _) => ExitFromTray());
+
+        _notifyIcon = new NotifyIcon
+        {
+            Icon = SystemIcons.Application,
+            Visible = true,
+            Text = "Mitchell1 Helper",
+            ContextMenuStrip = _trayMenu
+        };
+        _notifyIcon.DoubleClick += (_, _) => ShowFromTray();
+
+        Resize += SettingsForm_Resize;
+        FormClosing += SettingsForm_FormClosing;
+        FormClosed += SettingsForm_FormClosed;
+    }
+
+    private void SettingsForm_Resize(object? sender, EventArgs e)
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            HideToTray();
+        }
+    }
+
+    private void SettingsForm_FormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (_allowExit)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        HideToTray();
+    }
+
+    private void HideToTray()
+    {
+        Hide();
+        ShowInTaskbar = false;
+        _notifyIcon?.ShowBalloonTip(2000, "Mitchell1 Helper", "Still running in background.", ToolTipIcon.Info);
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        WindowState = FormWindowState.Normal;
+        ShowInTaskbar = true;
+        Activate();
+    }
+
+    private void ExitFromTray()
+    {
+        _allowExit = true;
+        _statusTimer.Stop();
+        _notifyIcon?.Dispose();
+        _trayMenu?.Dispose();
+        Close();
+    }
+
+    private void SettingsForm_FormClosed(object? sender, FormClosedEventArgs e)
+    {
+        _statusTimer.Dispose();
+        _notifyIcon?.Dispose();
+        _trayMenu?.Dispose();
     }
 
     private void LoadSettingsIntoUi()
@@ -106,5 +182,4 @@ public partial class SettingsForm : Form
     {
         return LicenseManager.UsageMode == LicenseUsageMode.Designtime;
     }
-
-    }
+}

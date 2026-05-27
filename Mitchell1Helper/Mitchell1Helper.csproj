@@ -15,5 +15,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.2" />
+    <PackageReference Include="Velopack" Version="0.0.*" />
   </ItemGroup>
 </Project>

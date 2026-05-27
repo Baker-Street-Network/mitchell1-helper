@@ -13,6 +13,7 @@ public class AppSettings
     public SqlConfig Sql { get; set; } = new();
     public OdooConfig Odoo { get; set; } = new();
     public SyncConfig Sync { get; set; } = new();
+    public UpdateConfig Update { get; set; } = new();
 
     public class SqlConfig
     {
@@ -37,6 +38,13 @@ public class AppSettings
         public int PollIntervalSeconds { get; set; } = 30;
         public int BatchSize { get; set; } = 200;
         public int HeartbeatIntervalSeconds { get; set; } = 15;
+    }
+
+    public class UpdateConfig
+    {
+        public bool Enabled { get; set; } = true;
+        public string GithubRepoUrl { get; set; } = "https://github.com/Baker-Street-Network/mitchell1-helper";
+        public int CheckIntervalHours { get; set; } = 4;
     }
 
     public static AppSettings Load()
