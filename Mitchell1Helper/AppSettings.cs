@@ -25,6 +25,7 @@ public class AppSettings
         public string Database { get; set; } = "";
         public string Username { get; set; } = "";
         public string Password { get; set; } = "";
+        public string ApiKey { get; set; } = "";
         public string CustomerModel { get; set; } = "res.partner";
         public string ExternalRefPrefix { get; set; } = "MITCHELL1-";
         public string WebsocketSecret { get; set; } = "";

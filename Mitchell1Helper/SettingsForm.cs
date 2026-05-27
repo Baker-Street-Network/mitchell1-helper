@@ -43,7 +43,10 @@ public partial class SettingsForm : Form
         odooUrlTextBox.Text = _settings.Odoo.Url;
         odooDatabaseTextBox.Text = _settings.Odoo.Database;
         odooUsernameTextBox.Text = _settings.Odoo.Username;
-        odooPasswordTextBox.Text = _settings.Odoo.Password;
+        odooPasswordTextBox.Text = _settings.Odoo.ApiKey;
+
+        odooPasswordLabel.Text = "API Key";
+        odooPasswordTextBox.PasswordChar = '\0';
 
         statusLabel.Text = "Settings loaded.";
         statusLabel.ForeColor = Color.DarkSlateGray;
@@ -58,7 +61,7 @@ public partial class SettingsForm : Form
             _settings.Odoo.Url = odooUrlTextBox.Text.Trim();
             _settings.Odoo.Database = odooDatabaseTextBox.Text.Trim();
             _settings.Odoo.Username = odooUsernameTextBox.Text.Trim();
-            _settings.Odoo.Password = odooPasswordTextBox.Text;
+            _settings.Odoo.ApiKey = odooPasswordTextBox.Text.Trim();
 
             _settings.Save();
 
