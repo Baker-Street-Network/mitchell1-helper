@@ -23,6 +23,7 @@ internal static class Program
 				services.AddHttpClient<OdooRpcClient>();
 
 				services.AddHostedService<Mitchell1BackgroundService>();
+				services.AddHostedService<OdooHeartbeatWebSocketService>();
 				services.AddHostedService<OdooCustomerWebSocketListenerService>();
 				services.AddHostedService<WebServerHostedService>();
 

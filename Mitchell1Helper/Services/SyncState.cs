@@ -5,6 +5,7 @@ public class SyncState
     private readonly object _lock = new();
 
     public DateTime? LastSuccessfulPollUtc { get; private set; }
+    public DateTime? LastHeartbeatSentUtc { get; private set; }
     public DateTime? LastProcessedChangeDateUtc { get; private set; }
     public long? LastProcessedCustomerId { get; private set; }
     public string? LastError { get; private set; }
@@ -27,6 +28,14 @@ public class SyncState
         lock (_lock)
         {
             LastError = error;
+        }
+    }
+
+    public void MarkHeartbeatSent()
+    {
+        lock (_lock)
+        {
+            LastHeartbeatSentUtc = DateTime.UtcNow;
         }
     }
 }

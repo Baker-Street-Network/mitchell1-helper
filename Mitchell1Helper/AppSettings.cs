@@ -39,6 +39,7 @@ public class AppSettings
     {
         public int PollIntervalSeconds { get; set; } = 30;
         public int BatchSize { get; set; } = 200;
+        public int HeartbeatIntervalSeconds { get; set; } = 15;
     }
 
     public static AppSettings Load()
