@@ -104,8 +104,4 @@ public partial class SettingsForm : Form
         return LicenseManager.UsageMode == LicenseUsageMode.Designtime;
     }
 
-    private void odooDatabaseLabel_Click(object sender, EventArgs e)
-    {
-
     }
-}

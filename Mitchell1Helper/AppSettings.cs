@@ -17,10 +17,6 @@ public class AppSettings
     public class SqlConfig
     {
         public string ConnectionString { get; set; } = "";
-        public string CustomersTable { get; set; } = "Customers";
-        public string IdColumn { get; set; } = "CustomerID";
-        public string LastChangeDateColumn { get; set; } = "LastChangeDate";
-        public string IsDeletedColumn { get; set; } = "IsDeleted";
     }
 
     public class OdooConfig

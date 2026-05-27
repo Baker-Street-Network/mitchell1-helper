@@ -208,7 +208,7 @@ partial class SettingsForm
         AutoScaleDimensions = new SizeF(10F, 25F);
         AutoScaleMode = AutoScaleMode.Font;
         AutoScroll = true;
-        ClientSize = new Size(1085, 460);
+        ClientSize = new Size(1085, 480);
         Controls.Add(textBox1);
         Controls.Add(statusLabel);
         Controls.Add(reloadButton);

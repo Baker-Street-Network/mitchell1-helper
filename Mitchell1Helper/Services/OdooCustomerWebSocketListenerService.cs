@@ -1,3 +1,4 @@
+using System.Data;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -17,6 +18,15 @@ public class OdooCustomerWebSocketListenerService(
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     private long _lastMessageId;
 
+    private static string EnsureTrustServerCertificate(string connectionString)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString)
+        {
+            TrustServerCertificate = true
+        };
+        return builder.ConnectionString;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("Odoo websocket listener started");
@@ -33,6 +43,7 @@ public class OdooCustomerWebSocketListenerService(
 
                 using var webSocket = new ClientWebSocket();
                 webSocket.Options.SetRequestHeader("Origin", "127.0.0.1");
+                webSocket.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 Uri uri = BuildWebSocketUri(appSettings.Odoo.Url);
                 logger.LogInformation("Connecting websocket to {Uri}", uri);
@@ -210,7 +221,7 @@ public class OdooCustomerWebSocketListenerService(
     {
         var kwargs = new Dictionary<string, object>
         {
-            ["fields"] = new[] { "id", "name", "email", "phone", "mobile", "active", "ref", "write_date" },
+            ["fields"] = new[] { "id", "first_name", "last_name", "email", "phone", "active", "ref", "write_date" },
             ["limit"] = 1
         };
 
@@ -238,14 +249,19 @@ public class OdooCustomerWebSocketListenerService(
             return;
         }
 
-        string name = GetString(row, "name") ?? $"Mitchell1 Customer {sqlCustomerId}";
+        string firstName = GetString(row, "first_name") ?? string.Empty;
+        string lastName = GetString(row, "last_name") ?? string.Empty;
         string email = GetString(row, "email") ?? string.Empty;
         string phone = GetString(row, "phone") ?? string.Empty;
-        string mobile = GetString(row, "mobile") ?? string.Empty;
         bool active = GetBool(row, "active", true);
-        DateTime changeDateUtc = ParseWriteDateUtc(GetString(row, "write_date"));
+        string rawWriteDate = GetString(row, "write_date") ?? string.Empty;
+        DateTime changeDateUtc = ParseWriteDateUtc(rawWriteDate);
 
-        await UpsertSqlCustomerAsync(sqlCustomerId, name, email, phone, mobile, !active, changeDateUtc, cancellationToken);
+        logger.LogInformation(
+            "Processing Odoo customer {OdooId} -> SQL {SqlId}: FirstName={FirstName}, LastName={LastName}, Email={Email}, RawWriteDate='{RawDate}', ParsedDate={ParsedDate}",
+            odooCustomerId, sqlCustomerId, firstName, lastName, email, rawWriteDate, changeDateUtc);
+
+        await UpsertSqlCustomerAsync(sqlCustomerId, firstName, lastName, email, phone, !active, changeDateUtc, cancellationToken);
 
         syncState.MarkSuccess(changeDateUtc, sqlCustomerId, 1);
         logger.LogInformation("Synced Odoo customer {OdooCustomerId} to SQL customer {SqlCustomerId}", odooCustomerId, sqlCustomerId);
@@ -253,60 +269,79 @@ public class OdooCustomerWebSocketListenerService(
 
     private async Task UpsertSqlCustomerAsync(
         long customerId,
-        string name,
+        string firstName,
+        string lastName,
         string email,
         string phone,
-        string mobile,
         bool isDeleted,
         DateTime lastChangeDateUtc,
         CancellationToken cancellationToken)
     {
-        await using var connection = new SqlConnection(appSettings.Sql.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
+        try
+        {
+            if (!Mitchell1Schema.IsValidSqlDateTime(lastChangeDateUtc))
+            {
+                logger.LogWarning(
+                    "Invalid date {Date} for customer {CustomerId}. Clamping to valid SQL Server range.",
+                    lastChangeDateUtc, customerId);
+                lastChangeDateUtc = Mitchell1Schema.ClampToValidRange(lastChangeDateUtc);
+            }
 
-        string table = QuoteIdentifier(appSettings.Sql.CustomersTable);
-        string idColumn = QuoteIdentifier(appSettings.Sql.IdColumn);
-        string lastChangeColumn = QuoteIdentifier(appSettings.Sql.LastChangeDateColumn);
-        string isDeletedColumn = QuoteIdentifier(appSettings.Sql.IsDeletedColumn);
+            string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
 
-        string updateSql = $@"
+            string table = QuoteIdentifier(Mitchell1Schema.CustomersTable);
+            string idColumn = QuoteIdentifier(Mitchell1Schema.IdColumn);
+            string lastChangeColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+            string isDeletedColumn = QuoteIdentifier(Mitchell1Schema.IsDeletedColumn);
+
+            string updateSql = $@"
 UPDATE {table}
-SET [Name] = @Name,
+SET [FirstName] = @FirstName,
+    [LastName] = @LastName,
     [Email] = @Email,
     [Phone] = @Phone,
-    [Mobile] = @Mobile,
     {isDeletedColumn} = @IsDeleted,
     {lastChangeColumn} = @LastChangeDate
 WHERE {idColumn} = @CustomerId;";
 
-        await using var updateCommand = new SqlCommand(updateSql, connection);
-        updateCommand.Parameters.AddWithValue("@Name", name);
-        updateCommand.Parameters.AddWithValue("@Email", email);
-        updateCommand.Parameters.AddWithValue("@Phone", phone);
-        updateCommand.Parameters.AddWithValue("@Mobile", mobile);
-        updateCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
-        updateCommand.Parameters.AddWithValue("@LastChangeDate", lastChangeDateUtc);
-        updateCommand.Parameters.AddWithValue("@CustomerId", customerId);
+            await using var updateCommand = new SqlCommand(updateSql, connection);
+            updateCommand.Parameters.AddWithValue("@FirstName", firstName);
+            updateCommand.Parameters.AddWithValue("@LastName", lastName);
+            updateCommand.Parameters.AddWithValue("@Email", email);
+            updateCommand.Parameters.AddWithValue("@Phone", phone);
+            updateCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
+            updateCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
+            updateCommand.Parameters.AddWithValue("@CustomerId", customerId);
 
-        int affected = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
-        if (affected > 0)
-        {
-            return;
+            int affected = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+            if (affected > 0)
+            {
+                return;
+            }
+
+            string insertSql = $@"
+INSERT INTO {table} ({idColumn}, [FirstName], [LastName], [Email], [Phone], {isDeletedColumn}, {lastChangeColumn})
+VALUES (@CustomerId, @FirstName, @LastName, @Email, @Phone, @IsDeleted, @LastChangeDate);";
+
+            await using var insertCommand = new SqlCommand(insertSql, connection);
+            insertCommand.Parameters.AddWithValue("@CustomerId", customerId);
+            insertCommand.Parameters.AddWithValue("@FirstName", firstName);
+            insertCommand.Parameters.AddWithValue("@LastName", lastName);
+            insertCommand.Parameters.AddWithValue("@Email", email);
+            insertCommand.Parameters.AddWithValue("@Phone", phone);
+            insertCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
+            insertCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
         }
-
-        string insertSql = $@"
-INSERT INTO {table} ({idColumn}, [Name], [Email], [Phone], [Mobile], {isDeletedColumn}, {lastChangeColumn})
-VALUES (@CustomerId, @Name, @Email, @Phone, @Mobile, @IsDeleted, @LastChangeDate);";
-
-        await using var insertCommand = new SqlCommand(insertSql, connection);
-        insertCommand.Parameters.AddWithValue("@CustomerId", customerId);
-        insertCommand.Parameters.AddWithValue("@Name", name);
-        insertCommand.Parameters.AddWithValue("@Email", email);
-        insertCommand.Parameters.AddWithValue("@Phone", phone);
-        insertCommand.Parameters.AddWithValue("@Mobile", mobile);
-        insertCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
-        insertCommand.Parameters.AddWithValue("@LastChangeDate", lastChangeDateUtc);
-        await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Failed to upsert customer. CustomerId={CustomerId}, FirstName={FirstName}, LastName={LastName}, Email={Email}, Phone={Phone}, IsDeleted={IsDeleted}, LastChangeDate={LastChangeDate}",
+                customerId, firstName, lastName, email, phone, isDeleted, lastChangeDateUtc);
+            throw;
+        }
     }
 
     private bool TryResolveSqlCustomerId(JsonElement row, out long sqlCustomerId)
@@ -411,6 +446,29 @@ VALUES (@CustomerId, @Name, @Email, @Phone, @Mobile, @IsDeleted, @LastChangeDate
 
     private static string QuoteIdentifier(string identifier)
     {
+        // Handle schema-qualified names (e.g., "SM.Customers")
+        if (identifier.Contains('.'))
+        {
+            var parts = identifier.Split('.');
+            if (parts.Length != 2)
+            {
+                throw new InvalidOperationException($"Invalid SQL identifier: {identifier}");
+            }
+
+            // Validate each part separately
+            foreach (var part in parts)
+            {
+                if (!IdentifierRegex.IsMatch(part))
+                {
+                    throw new InvalidOperationException($"Invalid SQL identifier part: {part}");
+                }
+            }
+
+            // Quote each part: [Schema].[Table]
+            return $"[{parts[0]}].[{parts[1]}]";
+        }
+
+        // Single identifier (column name)
         if (!IdentifierRegex.IsMatch(identifier))
         {
             throw new InvalidOperationException($"Invalid SQL identifier: {identifier}");

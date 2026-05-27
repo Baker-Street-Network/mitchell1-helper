@@ -28,6 +28,7 @@ public class OdooHeartbeatWebSocketService(
 
                 using var webSocket = new ClientWebSocket();
                 webSocket.Options.SetRequestHeader("Origin", "127.0.0.1");
+                webSocket.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 Uri uri = BuildWebSocketUri(appSettings.Odoo.Url);
                 logger.LogInformation("Connecting heartbeat websocket to {Uri}", uri);

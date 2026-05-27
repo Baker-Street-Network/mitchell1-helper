@@ -20,7 +20,11 @@ internal static class Program
 				services.AddSingleton(settings);
 				services.AddSingleton<SyncState>();
 				services.AddSingleton<MitchellCustomerSyncService>();
-				services.AddHttpClient<OdooRpcClient>();
+				services.AddHttpClient<OdooRpcClient>()
+					.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+					{
+						ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+					});
 
 				services.AddHostedService<Mitchell1BackgroundService>();
 				services.AddHostedService<OdooHeartbeatWebSocketService>();
