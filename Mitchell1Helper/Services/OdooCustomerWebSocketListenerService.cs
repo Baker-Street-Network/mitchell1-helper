@@ -221,7 +221,7 @@ public class OdooCustomerWebSocketListenerService(
     {
         var kwargs = new Dictionary<string, object>
         {
-            ["fields"] = new[] { "id", "first_name", "last_name", "email", "phone", "active", "ref", "write_date" },
+            ["fields"] = new[] { "id", "first_name", "last_name", "email", "phone", "active", "ref", "write_date", "mitchell1_customer_id", "mitchell1_vendor_id" },
             ["limit"] = 1
         };
 
@@ -235,20 +235,42 @@ public class OdooCustomerWebSocketListenerService(
 
         if (rows.ValueKind != JsonValueKind.Array || rows.GetArrayLength() == 0)
         {
-            logger.LogWarning("Odoo customer {CustomerId} not found", odooCustomerId);
+            logger.LogWarning("Odoo partner {PartnerId} not found", odooCustomerId);
             return;
         }
 
         JsonElement row = rows[0];
-        if (!TryResolveSqlCustomerId(row, out long sqlCustomerId))
+
+        // Check if this is a customer
+        if (TryGetLong(row, "mitchell1_customer_id", out long sqlCustomerId))
         {
-            logger.LogWarning(
-                "Skipping Odoo customer {CustomerId}; could not map ref to SQL customer ID with prefix {Prefix}",
-                odooCustomerId,
-                appSettings.Odoo.ExternalRefPrefix);
-            return;
+            await SyncCustomerRecordAsync(row, sqlCustomerId, odooCustomerId, cancellationToken);
         }
 
+        // Check if this is a vendor
+        if (TryGetLong(row, "mitchell1_vendor_id", out long sqlVendorId))
+        {
+            await SyncVendorRecordAsync(row, sqlVendorId, odooCustomerId, cancellationToken);
+        }
+
+        // If neither field is set, try the old ref-based lookup for backwards compatibility
+        if (!TryGetLong(row, "mitchell1_customer_id", out _) && !TryGetLong(row, "mitchell1_vendor_id", out _))
+        {
+            if (TryResolveSqlCustomerId(row, out long refBasedCustomerId))
+            {
+                await SyncCustomerRecordAsync(row, refBasedCustomerId, odooCustomerId, cancellationToken);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Skipping Odoo partner {PartnerId}; no mitchell1_customer_id, mitchell1_vendor_id, or valid ref found",
+                    odooCustomerId);
+            }
+        }
+    }
+
+    private async Task SyncCustomerRecordAsync(JsonElement row, long sqlCustomerId, int odooCustomerId, CancellationToken cancellationToken)
+    {
         string firstName = GetString(row, "first_name") ?? string.Empty;
         string lastName = GetString(row, "last_name") ?? string.Empty;
         bool active = GetBool(row, "active", true);
@@ -263,6 +285,23 @@ public class OdooCustomerWebSocketListenerService(
 
         syncState.MarkSuccess(changeDateUtc, sqlCustomerId, 1);
         logger.LogInformation("Synced Odoo customer {OdooCustomerId} to SQL customer {SqlCustomerId}", odooCustomerId, sqlCustomerId);
+    }
+
+    private async Task SyncVendorRecordAsync(JsonElement row, long sqlVendorId, int odooVendorId, CancellationToken cancellationToken)
+    {
+        string name = GetString(row, "name") ?? string.Empty;
+        bool active = GetBool(row, "active", true);
+        string rawWriteDate = GetString(row, "write_date") ?? string.Empty;
+        DateTime changeDateUtc = ParseWriteDateUtc(rawWriteDate);
+
+        logger.LogInformation(
+            "Processing Odoo vendor {OdooId} -> SQL {SqlId}: Name={Name}, RawWriteDate='{RawDate}', ParsedDate={ParsedDate}",
+            odooVendorId, sqlVendorId, name, rawWriteDate, changeDateUtc);
+
+        await UpsertSqlVendorAsync(sqlVendorId, name, !active, changeDateUtc, cancellationToken);
+
+        syncState.MarkVendorSuccess(changeDateUtc, sqlVendorId, 1);
+        logger.LogInformation("Synced Odoo vendor {OdooVendorId} to SQL vendor {SqlVendorId}", odooVendorId, sqlVendorId);
     }
 
     private async Task UpsertSqlCustomerAsync(
@@ -330,6 +369,71 @@ VALUES (@CustomerId, @FirstName, @LastName, @IsDeleted, @LastChangeDate);";
             logger.LogError(ex,
                 "Failed to upsert customer. CustomerId={CustomerId}, FirstName={FirstName}, LastName={LastName}, IsDeleted={IsDeleted}, LastChangeDate={LastChangeDate}",
                 customerId, firstName, lastName, isDeleted, lastChangeDateUtc);
+            throw;
+        }
+    }
+
+    private async Task UpsertSqlVendorAsync(
+        long vendorId,
+        string name,
+        bool isDeleted,
+        DateTime lastChangeDateUtc,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!Mitchell1Schema.IsValidSqlDateTime(lastChangeDateUtc))
+            {
+                logger.LogWarning(
+                    "Invalid date {Date} for vendor {VendorId}. Clamping to valid SQL Server range.",
+                    lastChangeDateUtc, vendorId);
+                lastChangeDateUtc = Mitchell1Schema.ClampToValidRange(lastChangeDateUtc);
+            }
+
+            string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            string table = QuoteIdentifier(Mitchell1Schema.VendorsTable);
+            string idColumn = QuoteIdentifier(Mitchell1Schema.VendorIdColumn);
+            string lastChangeColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+            string isDeletedColumn = QuoteIdentifier(Mitchell1Schema.IsDeletedColumn);
+
+            string updateSql = $@"
+UPDATE {table}
+SET [Name] = @Name,
+    {isDeletedColumn} = @IsDeleted,
+    {lastChangeColumn} = @LastChangeDate
+WHERE {idColumn} = @VendorId;";
+
+            await using var updateCommand = new SqlCommand(updateSql, connection);
+            updateCommand.Parameters.AddWithValue("@Name", name);
+            updateCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
+            updateCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
+            updateCommand.Parameters.AddWithValue("@VendorId", vendorId);
+
+            int affected = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+            if (affected > 0)
+            {
+                return;
+            }
+
+            string insertSql = $@"
+INSERT INTO {table} ({idColumn}, [Name], {isDeletedColumn}, {lastChangeColumn})
+VALUES (@VendorId, @Name, @IsDeleted, @LastChangeDate);";
+
+            await using var insertCommand = new SqlCommand(insertSql, connection);
+            insertCommand.Parameters.AddWithValue("@VendorId", vendorId);
+            insertCommand.Parameters.AddWithValue("@Name", name);
+            insertCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
+            insertCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Failed to upsert vendor. VendorId={VendorId}, Name={Name}, IsDeleted={IsDeleted}, LastChangeDate={LastChangeDate}",
+                vendorId, name, isDeleted, lastChangeDateUtc);
             throw;
         }
     }
@@ -403,6 +507,36 @@ VALUES (@CustomerId, @FirstName, @LastName, @IsDeleted, @LastChangeDate);";
         }
 
         return fallback;
+    }
+
+    private static bool TryGetLong(JsonElement obj, string property, out long value)
+    {
+        value = 0;
+
+        if (!obj.TryGetProperty(property, out JsonElement element))
+        {
+            return false;
+        }
+
+        // Handle null/false values from Odoo
+        if (element.ValueKind == JsonValueKind.Null || element.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out long longValue))
+        {
+            value = longValue;
+            return value != 0;
+        }
+
+        if (element.ValueKind == JsonValueKind.String && long.TryParse(element.GetString(), out long parsed))
+        {
+            value = parsed;
+            return value != 0;
+        }
+
+        return false;
     }
 
     private static bool TryReadInt(JsonElement element, out int value)

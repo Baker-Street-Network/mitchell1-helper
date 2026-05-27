@@ -8,6 +8,9 @@ public class Mitchell1BackgroundService(
     ILogger<Mitchell1BackgroundService> logger,
     AppSettings appSettings,
     MitchellCustomerSyncService customerSyncService,
+    MitchellVendorSyncService vendorSyncService,
+    MitchellPartSyncService partSyncService,
+    MitchellRepairOrderSyncService repairOrderSyncService,
     MitchellPOSyncService poSyncService) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -21,6 +24,9 @@ public class Mitchell1BackgroundService(
             try
             {
                 await customerSyncService.PollAndSyncAsync(stoppingToken);
+                await vendorSyncService.PollAndSyncAsync(stoppingToken);
+                await partSyncService.PollAndSyncAsync(stoppingToken);
+                await repairOrderSyncService.PollAndSyncAsync(stoppingToken);
                 await poSyncService.PollAndSyncAsync(stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(pollSeconds), stoppingToken);
             }

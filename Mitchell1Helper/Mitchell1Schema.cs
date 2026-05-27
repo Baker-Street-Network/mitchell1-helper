@@ -35,6 +35,86 @@ public static class Mitchell1Schema
     /// Is deleted flag column name
     /// </summary>
     public const string IsDeletedColumn = "IsDeleted";
+    /// <summary>
+    /// Is deleted flag column name
+    /// </summary>
+    public const string DeletedColumn = "Deleted";
+
+    // Vendor Schema Constants
+
+    /// <summary>
+    /// Vendors table name (without schema)
+    /// </summary>
+    public const string VendorsTableName = "Vendor";
+
+    /// <summary>
+    /// Vendors table full name (schema.table)
+    /// </summary>
+    public const string VendorsTable = $"{SchemaName}.{VendorsTableName}";
+
+    /// <summary>
+    /// Vendor ID column name (primary key)
+    /// </summary>
+    public const string VendorIdColumn = "VendorId";
+
+    // Parts Schema Constants
+
+    /// <summary>
+    /// Parts table name (without schema)
+    /// </summary>
+    public const string PartsTableName = "Part";
+
+    /// <summary>
+    /// Parts table full name (schema.table)
+    /// </summary>
+    public const string PartsTable = $"{SchemaName}.{PartsTableName}";
+
+    /// <summary>
+    /// Part ID column name (primary key)
+    /// </summary>
+    public const string PartIdColumn = "PartId";
+
+    // Repair Order Schema Constants
+
+    /// <summary>
+    /// RepairOrder table name (without schema)
+    /// </summary>
+    public const string RepairOrderTableName = "RepairOrder";
+
+    /// <summary>
+    /// RepairOrder table full name (schema.table)
+    /// </summary>
+    public const string RepairOrderTable = $"{SchemaName}.{RepairOrderTableName}";
+
+    /// <summary>
+    /// Repair Order ID column name (primary key)
+    /// </summary>
+    public const string RepairOrderIdColumn = "RepairOrderId";
+
+    /// <summary>
+    /// LineItem table name (without schema)
+    /// </summary>
+    public const string LineItemTableName = "LineItem";
+
+    /// <summary>
+    /// LineItem table full name (schema.table)
+    /// </summary>
+    public const string LineItemTable = $"{SchemaName}.{LineItemTableName}";
+
+    /// <summary>
+    /// Line Item ID column name (primary key)
+    /// </summary>
+    public const string LineItemIdColumn = "LineItemId";
+
+    /// <summary>
+    /// RepairOrderLineItemSequence table name (without schema)
+    /// </summary>
+    public const string RepairOrderLineItemSequenceTableName = "RepairOrderLineItemSequence";
+
+    /// <summary>
+    /// RepairOrderLineItemSequence table full name (schema.table)
+    /// </summary>
+    public const string RepairOrderLineItemSequenceTable = $"{SchemaName}.{RepairOrderLineItemSequenceTableName}";
 
     // Purchase Order Schema Constants
 

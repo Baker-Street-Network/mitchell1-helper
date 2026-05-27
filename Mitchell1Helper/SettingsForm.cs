@@ -159,6 +159,26 @@ public partial class SettingsForm : Form
         string lastId = _syncState.LastProcessedCustomerId?.ToString() ?? "none";
         string err = string.IsNullOrWhiteSpace(_syncState.LastError) ? "none" : _syncState.LastError;
 
+        string lastVendorPoll = _syncState.LastSuccessfulVendorPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string lastVendorChange = _syncState.LastProcessedVendorChangeDateUtc?.ToString("u") ?? "none";
+        string lastVendorId = _syncState.LastProcessedVendorId?.ToString() ?? "none";
+        string vendorErr = string.IsNullOrWhiteSpace(_syncState.LastVendorError) ? "none" : _syncState.LastVendorError;
+
+        string lastPartPoll = _syncState.LastSuccessfulPartPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string lastPartChange = _syncState.LastProcessedPartChangeDateUtc?.ToString("u") ?? "none";
+        string lastPartId = _syncState.LastProcessedPartId?.ToString() ?? "none";
+        string partErr = string.IsNullOrWhiteSpace(_syncState.LastPartError) ? "none" : _syncState.LastPartError;
+
+        string lastRepairOrderPoll = _syncState.LastSuccessfulRepairOrderPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string lastRepairOrderChange = _syncState.LastProcessedRepairOrderChangeDateUtc?.ToString("u") ?? "none";
+        string lastRepairOrderId = _syncState.LastProcessedRepairOrderId?.ToString() ?? "none";
+        string repairOrderErr = string.IsNullOrWhiteSpace(_syncState.LastRepairOrderError) ? "none" : _syncState.LastRepairOrderError;
+
+        string lastRepairOrderLineItemPoll = _syncState.LastSuccessfulRepairOrderLineItemPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string lastRepairOrderLineItemChange = _syncState.LastProcessedRepairOrderLineItemChangeDateUtc?.ToString("u") ?? "none";
+        string lastRepairOrderLineItemId = _syncState.LastProcessedRepairOrderLineItemId?.ToString() ?? "none";
+        string repairOrderLineItemErr = string.IsNullOrWhiteSpace(_syncState.LastRepairOrderLineItemError) ? "none" : _syncState.LastRepairOrderLineItemError;
+
         string lastPOPoll = _syncState.LastSuccessfulPOPollUtc?.ToLocalTime().ToString("g") ?? "never";
         string lastPOChange = _syncState.LastProcessedPOChangeDateUtc?.ToString("u") ?? "none";
         string lastPOMasterId = _syncState.LastProcessedPOMasterId?.ToString() ?? "none";
@@ -172,6 +192,34 @@ public partial class SettingsForm : Form
             $"Last record ID: {lastId}" + Environment.NewLine +
             $"Last batch count: {_syncState.LastBatchProcessedCount}" + Environment.NewLine +
             $"Last error: {err}" + Environment.NewLine +
+            Environment.NewLine +
+            $"=== VENDORS ===" + Environment.NewLine +
+            $"Last poll: {lastVendorPoll}" + Environment.NewLine +
+            $"Last change processed (UTC): {lastVendorChange}" + Environment.NewLine +
+            $"Last record ID: {lastVendorId}" + Environment.NewLine +
+            $"Last batch count: {_syncState.LastVendorBatchProcessedCount}" + Environment.NewLine +
+            $"Last error: {vendorErr}" + Environment.NewLine +
+            Environment.NewLine +
+            $"=== PARTS ===" + Environment.NewLine +
+            $"Last poll: {lastPartPoll}" + Environment.NewLine +
+            $"Last change processed (UTC): {lastPartChange}" + Environment.NewLine +
+            $"Last record ID: {lastPartId}" + Environment.NewLine +
+            $"Last batch count: {_syncState.LastPartBatchProcessedCount}" + Environment.NewLine +
+            $"Last error: {partErr}" + Environment.NewLine +
+            Environment.NewLine +
+            $"=== REPAIR ORDERS ===" + Environment.NewLine +
+            $"Last poll: {lastRepairOrderPoll}" + Environment.NewLine +
+            $"Last change processed (UTC): {lastRepairOrderChange}" + Environment.NewLine +
+            $"Last record ID: {lastRepairOrderId}" + Environment.NewLine +
+            $"Last batch count: {_syncState.LastRepairOrderBatchProcessedCount}" + Environment.NewLine +
+            $"Last error: {repairOrderErr}" + Environment.NewLine +
+            Environment.NewLine +
+            $"=== REPAIR ORDER LINE ITEMS ===" + Environment.NewLine +
+            $"Last poll: {lastRepairOrderLineItemPoll}" + Environment.NewLine +
+            $"Last change processed (UTC): {lastRepairOrderLineItemChange}" + Environment.NewLine +
+            $"Last record ID: {lastRepairOrderLineItemId}" + Environment.NewLine +
+            $"Last batch count: {_syncState.LastRepairOrderLineItemBatchProcessedCount}" + Environment.NewLine +
+            $"Last error: {repairOrderLineItemErr}" + Environment.NewLine +
             Environment.NewLine +
             $"=== PURCHASE ORDERS ===" + Environment.NewLine +
             $"Last poll: {lastPOPoll}" + Environment.NewLine +

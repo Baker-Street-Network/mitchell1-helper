@@ -28,6 +28,10 @@ public class AppSettings
         public string Password { get; set; } = "";
         public string ApiKey { get; set; } = "";
         public string CustomerModel { get; set; } = "res.partner";
+        public string VendorModel { get; set; } = "res.partner";
+        public string PartModel { get; set; } = "mitchell.part";
+        public string RepairOrderModel { get; set; } = "mitchell.repair";
+        public string RepairOrderLineItemModel { get; set; } = "mitchell.repair.line";
         public string POHeaderModel { get; set; } = "mitchell.po";
         public string PODetailModel { get; set; } = "mitchell.po.detail";
         public string ExternalRefPrefix { get; set; } = "MITCHELL1-";

@@ -25,6 +25,9 @@ internal static class Program
 				services.AddSingleton(settings);
 				services.AddSingleton<SyncState>();
 				services.AddSingleton<MitchellCustomerSyncService>();
+				services.AddSingleton<MitchellVendorSyncService>();
+				services.AddSingleton<MitchellPartSyncService>();
+				services.AddSingleton<MitchellRepairOrderSyncService>();
 				services.AddSingleton<MitchellPOSyncService>();
 				services.AddHttpClient<OdooRpcClient>()
 					.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
