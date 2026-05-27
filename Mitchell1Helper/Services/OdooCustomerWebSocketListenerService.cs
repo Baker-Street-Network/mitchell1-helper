@@ -251,17 +251,15 @@ public class OdooCustomerWebSocketListenerService(
 
         string firstName = GetString(row, "first_name") ?? string.Empty;
         string lastName = GetString(row, "last_name") ?? string.Empty;
-        string email = GetString(row, "email") ?? string.Empty;
-        string phone = GetString(row, "phone") ?? string.Empty;
         bool active = GetBool(row, "active", true);
         string rawWriteDate = GetString(row, "write_date") ?? string.Empty;
         DateTime changeDateUtc = ParseWriteDateUtc(rawWriteDate);
 
         logger.LogInformation(
-            "Processing Odoo customer {OdooId} -> SQL {SqlId}: FirstName={FirstName}, LastName={LastName}, Email={Email}, RawWriteDate='{RawDate}', ParsedDate={ParsedDate}",
-            odooCustomerId, sqlCustomerId, firstName, lastName, email, rawWriteDate, changeDateUtc);
+            "Processing Odoo customer {OdooId} -> SQL {SqlId}: FirstName={FirstName}, LastName={LastName}, RawWriteDate='{RawDate}', ParsedDate={ParsedDate}",
+            odooCustomerId, sqlCustomerId, firstName, lastName, rawWriteDate, changeDateUtc);
 
-        await UpsertSqlCustomerAsync(sqlCustomerId, firstName, lastName, email, phone, !active, changeDateUtc, cancellationToken);
+        await UpsertSqlCustomerAsync(sqlCustomerId, firstName, lastName, !active, changeDateUtc, cancellationToken);
 
         syncState.MarkSuccess(changeDateUtc, sqlCustomerId, 1);
         logger.LogInformation("Synced Odoo customer {OdooCustomerId} to SQL customer {SqlCustomerId}", odooCustomerId, sqlCustomerId);
@@ -271,8 +269,6 @@ public class OdooCustomerWebSocketListenerService(
         long customerId,
         string firstName,
         string lastName,
-        string email,
-        string phone,
         bool isDeleted,
         DateTime lastChangeDateUtc,
         CancellationToken cancellationToken)
@@ -300,8 +296,6 @@ public class OdooCustomerWebSocketListenerService(
 UPDATE {table}
 SET [FirstName] = @FirstName,
     [LastName] = @LastName,
-    [Email] = @Email,
-    [Phone] = @Phone,
     {isDeletedColumn} = @IsDeleted,
     {lastChangeColumn} = @LastChangeDate
 WHERE {idColumn} = @CustomerId;";
@@ -309,8 +303,6 @@ WHERE {idColumn} = @CustomerId;";
             await using var updateCommand = new SqlCommand(updateSql, connection);
             updateCommand.Parameters.AddWithValue("@FirstName", firstName);
             updateCommand.Parameters.AddWithValue("@LastName", lastName);
-            updateCommand.Parameters.AddWithValue("@Email", email);
-            updateCommand.Parameters.AddWithValue("@Phone", phone);
             updateCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
             updateCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
             updateCommand.Parameters.AddWithValue("@CustomerId", customerId);
@@ -322,15 +314,13 @@ WHERE {idColumn} = @CustomerId;";
             }
 
             string insertSql = $@"
-INSERT INTO {table} ({idColumn}, [FirstName], [LastName], [Email], [Phone], {isDeletedColumn}, {lastChangeColumn})
-VALUES (@CustomerId, @FirstName, @LastName, @Email, @Phone, @IsDeleted, @LastChangeDate);";
+INSERT INTO {table} ({idColumn}, [FirstName], [LastName], {isDeletedColumn}, {lastChangeColumn})
+VALUES (@CustomerId, @FirstName, @LastName, @IsDeleted, @LastChangeDate);";
 
             await using var insertCommand = new SqlCommand(insertSql, connection);
             insertCommand.Parameters.AddWithValue("@CustomerId", customerId);
             insertCommand.Parameters.AddWithValue("@FirstName", firstName);
             insertCommand.Parameters.AddWithValue("@LastName", lastName);
-            insertCommand.Parameters.AddWithValue("@Email", email);
-            insertCommand.Parameters.AddWithValue("@Phone", phone);
             insertCommand.Parameters.AddWithValue("@IsDeleted", isDeleted);
             insertCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDateUtc;
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -338,8 +328,8 @@ VALUES (@CustomerId, @FirstName, @LastName, @Email, @Phone, @IsDeleted, @LastCha
         catch (Exception ex)
         {
             logger.LogError(ex,
-                "Failed to upsert customer. CustomerId={CustomerId}, FirstName={FirstName}, LastName={LastName}, Email={Email}, Phone={Phone}, IsDeleted={IsDeleted}, LastChangeDate={LastChangeDate}",
-                customerId, firstName, lastName, email, phone, isDeleted, lastChangeDateUtc);
+                "Failed to upsert customer. CustomerId={CustomerId}, FirstName={FirstName}, LastName={LastName}, IsDeleted={IsDeleted}, LastChangeDate={LastChangeDate}",
+                customerId, firstName, lastName, isDeleted, lastChangeDateUtc);
             throw;
         }
     }

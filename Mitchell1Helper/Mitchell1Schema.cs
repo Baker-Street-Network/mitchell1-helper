@@ -36,6 +36,38 @@ public static class Mitchell1Schema
     /// </summary>
     public const string IsDeletedColumn = "IsDeleted";
 
+    // Purchase Order Schema Constants
+
+    /// <summary>
+    /// POMaster table name (without schema)
+    /// </summary>
+    public const string POMasterTableName = "POMaster";
+
+    /// <summary>
+    /// POMaster table full name (schema.table)
+    /// </summary>
+    public const string POMasterTable = $"{SchemaName}.{POMasterTableName}";
+
+    /// <summary>
+    /// PODetail table name (without schema)
+    /// </summary>
+    public const string PODetailTableName = "PODetail";
+
+    /// <summary>
+    /// PODetail table full name (schema.table)
+    /// </summary>
+    public const string PODetailTable = $"{SchemaName}.{PODetailTableName}";
+
+    /// <summary>
+    /// PO Master ID column name (primary key)
+    /// </summary>
+    public const string POMasterIdColumn = "POMasterId";
+
+    /// <summary>
+    /// PO Detail ID column name (primary key)
+    /// </summary>
+    public const string PODetailIdColumn = "PODetailId";
+
     /// <summary>
     /// Minimum valid SQL Server datetime value (for datetime/datetime2 compatibility)
     /// </summary>

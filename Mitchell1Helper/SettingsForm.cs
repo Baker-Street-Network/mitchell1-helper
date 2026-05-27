@@ -159,13 +159,27 @@ public partial class SettingsForm : Form
         string lastId = _syncState.LastProcessedCustomerId?.ToString() ?? "none";
         string err = string.IsNullOrWhiteSpace(_syncState.LastError) ? "none" : _syncState.LastError;
 
+        string lastPOPoll = _syncState.LastSuccessfulPOPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string lastPOChange = _syncState.LastProcessedPOChangeDateUtc?.ToString("u") ?? "none";
+        string lastPOMasterId = _syncState.LastProcessedPOMasterId?.ToString() ?? "none";
+        string poErr = string.IsNullOrWhiteSpace(_syncState.LastPOError) ? "none" : _syncState.LastPOError;
+
         textBox1.Text =
+            $"=== CUSTOMERS ===" + Environment.NewLine +
             $"Last heartbeat push: {lastHeartbeat}" + Environment.NewLine +
             $"Last poll: {lastPoll}" + Environment.NewLine +
             $"Last change processed (UTC): {lastChange}" + Environment.NewLine +
             $"Last record ID: {lastId}" + Environment.NewLine +
             $"Last batch count: {_syncState.LastBatchProcessedCount}" + Environment.NewLine +
-            $"Last error: {err}" + Environment.NewLine;
+            $"Last error: {err}" + Environment.NewLine +
+            Environment.NewLine +
+            $"=== PURCHASE ORDERS ===" + Environment.NewLine +
+            $"Last poll: {lastPOPoll}" + Environment.NewLine +
+            $"Last change processed (UTC): {lastPOChange}" + Environment.NewLine +
+            $"Last POMasterId: {lastPOMasterId}" + Environment.NewLine +
+            $"Last headers count: {_syncState.LastPOHeadersProcessedCount}" + Environment.NewLine +
+            $"Last details count: {_syncState.LastPODetailProcessedCount}" + Environment.NewLine +
+            $"Last error: {poErr}" + Environment.NewLine;
     }
 
     private void saveButton_Click(object sender, EventArgs e)

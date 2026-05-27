@@ -44,10 +44,10 @@ public class OdooRpcClient(
                 body["ids"] = args[0];
                 body["vals"] = args[1];
             }
-            // create: args[0] = values dict
+            // create: args[0] = values dict (Odoo 17+ requires vals_list: a list of dicts)
             else if (method == "create")
             {
-                body["vals"] = args[0];
+                body["vals_list"] = args[0] is IEnumerable<object> ? args[0] : new object[] { args[0] };
             }
             else
             {
@@ -98,7 +98,7 @@ public class OdooRpcClient(
         logger.LogDebug("Odoo JSON-2 POST {Endpoint}", endpoint);
 
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        //response.EnsureSuccessStatusCode();
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         JsonDocument document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);

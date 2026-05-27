@@ -53,121 +53,108 @@ partial class SettingsForm
         // 
         sqlSectionLabel.AutoSize = true;
         sqlSectionLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold, GraphicsUnit.Point, 0);
-        sqlSectionLabel.Location = new Point(23, 27);
-        sqlSectionLabel.Margin = new Padding(4, 0, 4, 0);
+        sqlSectionLabel.Location = new Point(16, 16);
         sqlSectionLabel.Name = "sqlSectionLabel";
-        sqlSectionLabel.Size = new Size(129, 30);
+        sqlSectionLabel.Size = new Size(87, 20);
         sqlSectionLabel.TabIndex = 0;
         sqlSectionLabel.Text = "SQL Source";
         // 
         // sqlConnectionLabel
         // 
         sqlConnectionLabel.AutoSize = true;
-        sqlConnectionLabel.Location = new Point(29, 83);
-        sqlConnectionLabel.Margin = new Padding(4, 0, 4, 0);
+        sqlConnectionLabel.Location = new Point(24, 50);
         sqlConnectionLabel.Name = "sqlConnectionLabel";
-        sqlConnectionLabel.Size = new Size(153, 25);
+        sqlConnectionLabel.Size = new Size(103, 15);
         sqlConnectionLabel.TabIndex = 1;
         sqlConnectionLabel.Text = "Connection String";
         // 
         // sqlConnectionStringTextBox
         // 
-        sqlConnectionStringTextBox.Location = new Point(190, 83);
-        sqlConnectionStringTextBox.Margin = new Padding(4, 5, 4, 5);
+        sqlConnectionStringTextBox.Location = new Point(133, 47);
         sqlConnectionStringTextBox.Name = "sqlConnectionStringTextBox";
-        sqlConnectionStringTextBox.Size = new Size(630, 31);
+        sqlConnectionStringTextBox.Size = new Size(501, 23);
         sqlConnectionStringTextBox.TabIndex = 2;
         // 
         // odooSectionLabel
         // 
         odooSectionLabel.AutoSize = true;
         odooSectionLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold, GraphicsUnit.Point, 0);
-        odooSectionLabel.Location = new Point(23, 135);
-        odooSectionLabel.Margin = new Padding(4, 0, 4, 0);
+        odooSectionLabel.Location = new Point(16, 81);
         odooSectionLabel.Name = "odooSectionLabel";
-        odooSectionLabel.Size = new Size(150, 30);
+        odooSectionLabel.Size = new Size(101, 20);
         odooSectionLabel.TabIndex = 3;
         odooSectionLabel.Text = "Odoo 19 RPC";
         // 
         // odooUrlLabel
         // 
         odooUrlLabel.AutoSize = true;
-        odooUrlLabel.Location = new Point(34, 180);
-        odooUrlLabel.Margin = new Padding(4, 0, 4, 0);
+        odooUrlLabel.Location = new Point(24, 108);
         odooUrlLabel.Name = "odooUrlLabel";
-        odooUrlLabel.Size = new Size(95, 25);
+        odooUrlLabel.Size = new Size(61, 15);
         odooUrlLabel.TabIndex = 4;
         odooUrlLabel.Text = "Odoo URL";
         // 
         // odooUrlTextBox
         // 
-        odooUrlTextBox.Location = new Point(137, 180);
-        odooUrlTextBox.Margin = new Padding(4, 5, 4, 5);
+        odooUrlTextBox.Location = new Point(96, 108);
         odooUrlTextBox.Name = "odooUrlTextBox";
-        odooUrlTextBox.Size = new Size(313, 31);
+        odooUrlTextBox.Size = new Size(220, 23);
         odooUrlTextBox.TabIndex = 5;
         // 
         // odooDatabaseLabel
         // 
         odooDatabaseLabel.AutoSize = true;
-        odooDatabaseLabel.Location = new Point(34, 221);
-        odooDatabaseLabel.Margin = new Padding(4, 0, 4, 0);
+        odooDatabaseLabel.Location = new Point(24, 133);
         odooDatabaseLabel.Name = "odooDatabaseLabel";
-        odooDatabaseLabel.Size = new Size(86, 25);
+        odooDatabaseLabel.Size = new Size(55, 15);
         odooDatabaseLabel.TabIndex = 6;
         odooDatabaseLabel.Text = "Database";
         // 
         // odooDatabaseTextBox
         // 
-        odooDatabaseTextBox.Location = new Point(137, 218);
-        odooDatabaseTextBox.Margin = new Padding(4, 5, 4, 5);
+        odooDatabaseTextBox.Location = new Point(96, 131);
         odooDatabaseTextBox.Name = "odooDatabaseTextBox";
-        odooDatabaseTextBox.Size = new Size(313, 31);
+        odooDatabaseTextBox.Size = new Size(220, 23);
         odooDatabaseTextBox.TabIndex = 7;
         // 
         // odooUsernameLabel
         // 
         odooUsernameLabel.AutoSize = true;
-        odooUsernameLabel.Location = new Point(34, 262);
-        odooUsernameLabel.Margin = new Padding(4, 0, 4, 0);
+        odooUsernameLabel.Location = new Point(24, 157);
         odooUsernameLabel.Name = "odooUsernameLabel";
-        odooUsernameLabel.Size = new Size(91, 25);
+        odooUsernameLabel.Size = new Size(60, 15);
         odooUsernameLabel.TabIndex = 8;
         odooUsernameLabel.Text = "Username";
         // 
         // odooUsernameTextBox
         // 
-        odooUsernameTextBox.Location = new Point(137, 259);
-        odooUsernameTextBox.Margin = new Padding(4, 5, 4, 5);
+        odooUsernameTextBox.Location = new Point(96, 155);
         odooUsernameTextBox.Name = "odooUsernameTextBox";
-        odooUsernameTextBox.Size = new Size(313, 31);
+        odooUsernameTextBox.Size = new Size(220, 23);
         odooUsernameTextBox.TabIndex = 9;
         // 
         // odooPasswordLabel
         // 
         odooPasswordLabel.AutoSize = true;
-        odooPasswordLabel.Location = new Point(34, 298);
-        odooPasswordLabel.Margin = new Padding(4, 0, 4, 0);
+        odooPasswordLabel.Location = new Point(24, 179);
         odooPasswordLabel.Name = "odooPasswordLabel";
-        odooPasswordLabel.Size = new Size(87, 25);
+        odooPasswordLabel.Size = new Size(57, 15);
         odooPasswordLabel.TabIndex = 10;
         odooPasswordLabel.Text = "Password";
         // 
         // odooPasswordTextBox
         // 
-        odooPasswordTextBox.Location = new Point(137, 300);
-        odooPasswordTextBox.Margin = new Padding(4, 5, 4, 5);
+        odooPasswordTextBox.Location = new Point(96, 180);
         odooPasswordTextBox.Name = "odooPasswordTextBox";
-        odooPasswordTextBox.Size = new Size(313, 31);
+        odooPasswordTextBox.Size = new Size(220, 23);
         odooPasswordTextBox.TabIndex = 11;
         odooPasswordTextBox.UseSystemPasswordChar = true;
         // 
         // saveButton
         // 
-        saveButton.Location = new Point(29, 368);
-        saveButton.Margin = new Padding(4, 5, 4, 5);
+        saveButton.Location = new Point(20, 221);
         saveButton.Name = "saveButton";
-        saveButton.Size = new Size(186, 57);
+        saveButton.Size = new Size(130, 34);
         saveButton.TabIndex = 12;
         saveButton.Text = "Save Settings";
         saveButton.UseVisualStyleBackColor = true;
@@ -175,10 +162,9 @@ partial class SettingsForm
         // 
         // reloadButton
         // 
-        reloadButton.Location = new Point(223, 368);
-        reloadButton.Margin = new Padding(4, 5, 4, 5);
+        reloadButton.Location = new Point(156, 221);
         reloadButton.Name = "reloadButton";
-        reloadButton.Size = new Size(140, 57);
+        reloadButton.Size = new Size(98, 34);
         reloadButton.TabIndex = 13;
         reloadButton.Text = "Reload";
         reloadButton.UseVisualStyleBackColor = true;
@@ -188,27 +174,27 @@ partial class SettingsForm
         // 
         statusLabel.AutoSize = true;
         statusLabel.ForeColor = Color.DarkGreen;
-        statusLabel.Location = new Point(491, 152);
-        statusLabel.Margin = new Padding(4, 0, 4, 0);
+        statusLabel.Location = new Point(344, 91);
         statusLabel.Name = "statusLabel";
-        statusLabel.Size = new Size(50, 25);
+        statusLabel.Size = new Size(32, 15);
         statusLabel.TabIndex = 14;
         statusLabel.Text = "Logs";
         // 
         // textBox1
         // 
-        textBox1.Location = new Point(491, 180);
+        textBox1.Location = new Point(344, 108);
+        textBox1.Margin = new Padding(2, 2, 2, 2);
         textBox1.Multiline = true;
         textBox1.Name = "textBox1";
-        textBox1.Size = new Size(582, 268);
+        textBox1.Size = new Size(290, 162);
         textBox1.TabIndex = 15;
         // 
         // SettingsForm
         // 
-        AutoScaleDimensions = new SizeF(10F, 25F);
+        AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         AutoScroll = true;
-        ClientSize = new Size(1085, 480);
+        ClientSize = new Size(647, 281);
         Controls.Add(textBox1);
         Controls.Add(statusLabel);
         Controls.Add(reloadButton);
@@ -225,7 +211,6 @@ partial class SettingsForm
         Controls.Add(sqlConnectionStringTextBox);
         Controls.Add(sqlConnectionLabel);
         Controls.Add(sqlSectionLabel);
-        Margin = new Padding(4, 5, 4, 5);
         Name = "SettingsForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "Mitchell1 Helper Settings";

@@ -7,7 +7,8 @@ namespace Mitchell1Helper;
 public class Mitchell1BackgroundService(
     ILogger<Mitchell1BackgroundService> logger,
     AppSettings appSettings,
-    MitchellCustomerSyncService syncService) : BackgroundService
+    MitchellCustomerSyncService customerSyncService,
+    MitchellPOSyncService poSyncService) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -19,7 +20,8 @@ public class Mitchell1BackgroundService(
         {
             try
             {
-                await syncService.PollAndSyncAsync(stoppingToken);
+                await customerSyncService.PollAndSyncAsync(stoppingToken);
+                await poSyncService.PollAndSyncAsync(stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(pollSeconds), stoppingToken);
             }
             catch (OperationCanceledException)

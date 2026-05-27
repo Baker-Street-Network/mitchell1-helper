@@ -28,6 +28,8 @@ public class AppSettings
         public string Password { get; set; } = "";
         public string ApiKey { get; set; } = "";
         public string CustomerModel { get; set; } = "res.partner";
+        public string POHeaderModel { get; set; } = "mitchell.po";
+        public string PODetailModel { get; set; } = "mitchell.po.detail";
         public string ExternalRefPrefix { get; set; } = "MITCHELL1-";
         public string WebsocketSecret { get; set; } = "";
         public string WebsocketChannel { get; set; } = "record_updated";
