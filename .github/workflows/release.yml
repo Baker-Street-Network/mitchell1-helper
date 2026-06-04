@@ -40,10 +40,7 @@ jobs:
           echo "Version: $version"
 
       - name: Restore dependencies
-        run: dotnet restore ./Mitchell1Helper/Mitchell1Helper.csproj
-
-      - name: Build
-        run: dotnet build ./Mitchell1Helper/Mitchell1Helper.csproj --configuration Release --no-restore
+        run: dotnet restore ./Mitchell1Helper/Mitchell1Helper.csproj -r win-x64
 
       - name: Publish
         run: >
@@ -52,8 +49,8 @@ jobs:
           --framework net8.0-windows
           --runtime win-x64
           --self-contained true
-          --no-build
           -p:PublishSingleFile=true
+          --no-restore
           --output ./publish
 
       - name: Create Velopack Release
