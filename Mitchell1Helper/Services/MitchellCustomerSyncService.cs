@@ -9,6 +9,7 @@ public class MitchellCustomerSyncService(
     AppSettings appSettings,
     OdooRpcClient odooRpcClient,
     SyncState syncState,
+    RecordHashCache hashCache,
     ILogger<MitchellCustomerSyncService> logger)
 {
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -188,51 +189,26 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
         Dictionary<string, object> values,
         CancellationToken cancellationToken)
     {
-        var existingRecord = await FindPartnerByRefAsync(model, externalRef, cancellationToken);
-        if (existingRecord.HasValue)
+        string cacheKey = $"customer:{externalRef}";
+
+        if (!hashCache.HasChangedAndUpdate(cacheKey, values))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
+            return; // Nothing changed since last sync
+        }
 
-            // Only write if values have actually changed
-            bool hasChanges = false;
-            foreach (var (key, newValue) in values)
-            {
-                if (key == "ref") continue; // Skip ref field (it's the lookup key)
-
-                if (!existingValues.TryGetProperty(key, out var existingValueElement))
-                {
-                    hasChanges = true;
-                    break;
-                }
-
-                string? newValueStr = newValue?.ToString();
-                string? existingValueStr = existingValueElement.ValueKind == System.Text.Json.JsonValueKind.False || existingValueElement.ValueKind == System.Text.Json.JsonValueKind.True
-                    ? existingValueElement.GetBoolean().ToString()
-                    : existingValueElement.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? existingValueElement.GetString()
-                        : existingValueElement.ToString();
-
-                if (newValueStr != existingValueStr)
-                {
-                    hasChanges = true;
-                    break;
-                }
-            }
-
-            if (hasChanges)
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    model,
-                    "write",
-                    new object[] { new[] { existingId }, values },
-                    null,
-                    cancellationToken);
-            }
+        var existingId = await FindPartnerByRefAsync(model, externalRef, cancellationToken);
+        if (existingId.HasValue)
+        {
+            await odooRpcClient.ExecuteKwAsync(
+                model,
+                "write",
+                new object[] { new[] { existingId.Value }, values },
+                null,
+                cancellationToken);
             return;
         }
 
-        var result = await odooRpcClient.ExecuteKwAsync(
+        await odooRpcClient.ExecuteKwAsync(
             model,
             "create",
             new object[] { values },
@@ -242,35 +218,34 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
 
     private async Task ArchiveCustomerInOdooAsync(string model, string externalRef, CancellationToken cancellationToken)
     {
-        var existingRecord = await FindPartnerByRefAsync(model, externalRef, cancellationToken);
-        if (!existingRecord.HasValue)
+        string cacheKey = $"customer:{externalRef}";
+        var archiveValues = new Dictionary<string, object> { ["active"] = false };
+
+        if (!hashCache.HasChangedAndUpdate(cacheKey, archiveValues))
         {
             return;
         }
 
-        int existingId = existingRecord.Value.id;
-        var existingValues = existingRecord.Value.values;
-
-        // Only write if active is currently true
-        if (existingValues.TryGetProperty("active", out var activeElement) && 
-            activeElement.ValueKind == System.Text.Json.JsonValueKind.True)
+        var existingId = await FindPartnerByRefAsync(model, externalRef, cancellationToken);
+        if (!existingId.HasValue)
         {
-            var values = new Dictionary<string, object> { ["active"] = false };
-            await odooRpcClient.ExecuteKwAsync(
-                model,
-                "write",
-                new object[] { new[] { existingId }, values },
-                null,
-                cancellationToken);
+            return;
         }
+
+        await odooRpcClient.ExecuteKwAsync(
+            model,
+            "write",
+            new object[] { new[] { existingId.Value }, archiveValues },
+            null,
+            cancellationToken);
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindPartnerByRefAsync(string model, string externalRef, CancellationToken cancellationToken)
+    private async Task<int?> FindPartnerByRefAsync(string model, string externalRef, CancellationToken cancellationToken)
     {
         object[] domain = { new object[] { "ref", "=", externalRef } };
         var kwargs = new Dictionary<string, object>
         {
-            ["fields"] = new[] { "id", "first_name", "last_name", "active", "mitchell1_customer_id" },
+            ["fields"] = new[] { "id" },
             ["limit"] = 1
         };
 
@@ -286,9 +261,7 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
             return null;
         }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
+        return result[0].GetProperty("id").GetInt32();
     }
 
     private static Dictionary<string, object> BuildPartnerValues(

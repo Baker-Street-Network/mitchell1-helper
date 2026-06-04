@@ -9,6 +9,7 @@ public class MitchellPOSyncService(
     AppSettings appSettings,
     OdooRpcClient odooRpcClient,
     SyncState syncState,
+    RecordHashCache hashCache,
     ILogger<MitchellPOSyncService> logger)
 {
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -322,26 +323,23 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
         }
 
         int poMasterId = Convert.ToInt32(poMasterIdObj);
-
-        var existingRecord = await FindPOHeaderByIdAsync(poMasterId, cancellationToken);
-
-        // Convert PascalCase keys to snake_case for Odoo
         var odooValues = ConvertKeysToSnakeCase(values);
+        string cacheKey = $"po_header:{poMasterId}";
 
-        if (existingRecord.HasValue)
+        if (!hashCache.HasChangedAndUpdate(cacheKey, odooValues))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
+            return;
+        }
 
-            if (HasChanges(odooValues, existingValues))
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    appSettings.Odoo.POHeaderModel,
-                    "write",
-                    new object[] { new[] { existingId }, odooValues },
-                    null,
-                    cancellationToken);
-            }
+        int? existingId = await FindPOHeaderByIdAsync(poMasterId, cancellationToken);
+        if (existingId.HasValue)
+        {
+            await odooRpcClient.ExecuteKwAsync(
+                appSettings.Odoo.POHeaderModel,
+                "write",
+                new object[] { new[] { existingId.Value }, odooValues },
+                null,
+                cancellationToken);
             return;
         }
 
@@ -364,26 +362,23 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
         }
 
         int poDetailId = Convert.ToInt32(poDetailIdObj);
-
-        var existingRecord = await FindPODetailByIdAsync(poDetailId, cancellationToken);
-
-        // Convert PascalCase keys to snake_case for Odoo
         var odooValues = ConvertKeysToSnakeCase(values);
+        string cacheKey = $"po_detail:{poDetailId}";
 
-        if (existingRecord.HasValue)
+        if (!hashCache.HasChangedAndUpdate(cacheKey, odooValues))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
+            return;
+        }
 
-            if (HasChanges(odooValues, existingValues))
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    appSettings.Odoo.PODetailModel,
-                    "write",
-                    new object[] { new[] { existingId }, odooValues },
-                    null,
-                    cancellationToken);
-            }
+        int? existingId = await FindPODetailByIdAsync(poDetailId, cancellationToken);
+        if (existingId.HasValue)
+        {
+            await odooRpcClient.ExecuteKwAsync(
+                appSettings.Odoo.PODetailModel,
+                "write",
+                new object[] { new[] { existingId.Value }, odooValues },
+                null,
+                cancellationToken);
             return;
         }
 
@@ -395,15 +390,10 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
             cancellationToken);
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindPOHeaderByIdAsync(int poMasterId, CancellationToken cancellationToken)
+    private async Task<int?> FindPOHeaderByIdAsync(int poMasterId, CancellationToken cancellationToken)
     {
-        // Use snake_case for Odoo field name
         object[] domain = { new object[] { "po_master_id", "=", poMasterId } };
-        var kwargs = new Dictionary<string, object>
-        {
-            ["fields"] = new[] { "id" },
-            ["limit"] = 1
-        };
+        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
 
         var result = await odooRpcClient.ExecuteKwAsync(
             appSettings.Odoo.POHeaderModel,
@@ -413,24 +403,15 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
             cancellationToken);
 
         if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-        {
             return null;
-        }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
+        return result[0].GetProperty("id").GetInt32();
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindPODetailByIdAsync(int poDetailId, CancellationToken cancellationToken)
+    private async Task<int?> FindPODetailByIdAsync(int poDetailId, CancellationToken cancellationToken)
     {
-        // Use snake_case for Odoo field name
         object[] domain = { new object[] { "po_detail_id", "=", poDetailId } };
-        var kwargs = new Dictionary<string, object>
-        {
-            ["fields"] = new[] { "id" },
-            ["limit"] = 1
-        };
+        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
 
         var result = await odooRpcClient.ExecuteKwAsync(
             appSettings.Odoo.PODetailModel,
@@ -440,34 +421,9 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
             cancellationToken);
 
         if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-        {
             return null;
-        }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
-    }
-
-    private static bool HasChanges(Dictionary<string, object> newValues, System.Text.Json.JsonElement existingValues)
-    {
-        foreach (var (key, newValue) in newValues)
-        {
-            if (!existingValues.TryGetProperty(key, out var existingValueElement))
-            {
-                return true;
-            }
-
-            string? newValueStr = ConvertToString(newValue);
-            string? existingValueStr = ConvertToString(existingValueElement);
-
-            if (newValueStr != existingValueStr)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return result[0].GetProperty("id").GetInt32();
     }
 
     private static string? ConvertToString(object? value)
@@ -482,18 +438,6 @@ ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
             return dateValue.ToString("O");
 
         return value.ToString();
-    }
-
-    private static string? ConvertToString(System.Text.Json.JsonElement element)
-    {
-        return element.ValueKind switch
-        {
-            System.Text.Json.JsonValueKind.Null => null,
-            System.Text.Json.JsonValueKind.True => "True",
-            System.Text.Json.JsonValueKind.False => "False",
-            System.Text.Json.JsonValueKind.String => element.GetString(),
-            _ => element.ToString()
-        };
     }
 
     private static Dictionary<string, object> BuildPOHeaderValues(

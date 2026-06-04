@@ -9,6 +9,7 @@ public class MitchellRepairOrderSyncService(
     AppSettings appSettings,
     OdooRpcClient odooRpcClient,
     SyncState syncState,
+    RecordHashCache hashCache,
     ILogger<MitchellRepairOrderSyncService> logger)
 {
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -35,25 +36,29 @@ public class MitchellRepairOrderSyncService(
             return;
         }
 
-        logger.LogInformation("Starting repair order poll. Last processed: ChangeDate={LastChangeDate:O}, RepairOrderId={LastRepairOrderId}",
-            _lastChangeDateUtc, _lastRepairOrderId);
+        int totalProcessed = 0;
 
-        int processed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestRepairOrderId = null;
-
-        try
+        while (true)
         {
-            string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
-            await using var connection = new SqlConnection(connectionString);
-            await connection.OpenAsync(cancellationToken);
+            logger.LogInformation("Starting repair order poll. Last processed: ChangeDate={LastChangeDate:O}, RepairOrderId={LastRepairOrderId}",
+                _lastChangeDateUtc, _lastRepairOrderId);
 
-            string table = QuoteIdentifier(Mitchell1Schema.RepairOrderTable);
-            string idColumn = QuoteIdentifier(Mitchell1Schema.RepairOrderIdColumn);
-            string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+            int processed = 0;
+            DateTime? newestChangeDate = null;
+            long? newestRepairOrderId = null;
 
-            // Select all columns plus a string version of LastChangeDate to avoid SqlDateTime overflow
-            string query = $@"
+            try
+            {
+                string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken);
+
+                string table = QuoteIdentifier(Mitchell1Schema.RepairOrderTable);
+                string idColumn = QuoteIdentifier(Mitchell1Schema.RepairOrderIdColumn);
+                string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+
+                // Select all columns plus a string version of LastChangeDate to avoid SqlDateTime overflow
+                string query = $@"
 SELECT TOP (@BatchSize) *, 
        CONVERT(NVARCHAR(50), {changeDateColumn}, 127) AS LastChangeDate_String
 FROM {table}
@@ -61,88 +66,95 @@ WHERE ({changeDateColumn} > @LastChangeDate)
    OR ({changeDateColumn} = @LastChangeDate AND {idColumn} > @LastRepairOrderId)
 ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
 
-            await using var command = new SqlCommand(query, connection);
-            command.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize);
-            command.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = _lastChangeDateUtc;
-            command.Parameters.AddWithValue("@LastRepairOrderId", _lastRepairOrderId);
+                await using var command = new SqlCommand(query, connection);
+                command.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize);
+                command.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = _lastChangeDateUtc;
+                command.Parameters.AddWithValue("@LastRepairOrderId", _lastRepairOrderId);
 
-            await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+                await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
 
-            var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int changeDateStringOrdinal = -1;
-            foreach (var column in reader.GetColumnSchema())
-            {
-                if (!string.IsNullOrWhiteSpace(column.ColumnName))
+                var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int changeDateStringOrdinal = -1;
+                foreach (var column in reader.GetColumnSchema())
                 {
-                    columns.Add(column.ColumnName);
-                    if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(column.ColumnName))
                     {
-                        changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
+                        columns.Add(column.ColumnName);
+                        if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
+                        {
+                            changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
+                        }
                     }
                 }
-            }
 
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                try
+                while (await reader.ReadAsync(cancellationToken))
                 {
-                    long repairOrderId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn));
-
-                    DateTime changeDate;
                     try
                     {
-                        if (changeDateStringOrdinal >= 0 && !reader.IsDBNull(changeDateStringOrdinal))
+                        long repairOrderId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn));
+
+                        DateTime changeDate;
+                        try
                         {
-                            string dateString = reader.GetString(changeDateStringOrdinal);
-                            if (DateTime.TryParse(dateString, out changeDate))
+                            if (changeDateStringOrdinal >= 0 && !reader.IsDBNull(changeDateStringOrdinal))
                             {
-                                changeDate = changeDate.Kind == DateTimeKind.Utc ? changeDate : changeDate.ToUniversalTime();
+                                string dateString = reader.GetString(changeDateStringOrdinal);
+                                if (DateTime.TryParse(dateString, out changeDate))
+                                {
+                                    changeDate = changeDate.Kind == DateTimeKind.Utc ? changeDate : changeDate.ToUniversalTime();
+                                }
+                                else
+                                {
+                                    logger.LogWarning(
+                                        "Could not parse LastChangeDate string '{DateString}' for repair order {RepairOrderId}. Using current UTC time.",
+                                        dateString, repairOrderId);
+                                    changeDate = DateTime.UtcNow;
+                                }
+
+                                if (!Mitchell1Schema.IsValidSqlDateTime(changeDate))
+                                {
+                                    logger.LogWarning(
+                                        "Invalid date {Date} (from string: '{DateString}') for repair order {RepairOrderId}. Clamping to valid range.",
+                                        changeDate, dateString, repairOrderId);
+                                    changeDate = Mitchell1Schema.ClampToValidRange(changeDate);
+                                }
                             }
                             else
                             {
                                 logger.LogWarning(
-                                    "Could not parse LastChangeDate string '{DateString}' for repair order {RepairOrderId}. Using current UTC time.",
-                                    dateString, repairOrderId);
+                                    "LastChangeDate_String column missing or null for repair order {RepairOrderId}. Using current UTC time.",
+                                    repairOrderId);
                                 changeDate = DateTime.UtcNow;
                             }
-
-                            if (!Mitchell1Schema.IsValidSqlDateTime(changeDate))
-                            {
-                                logger.LogWarning(
-                                    "Invalid date {Date} (from string: '{DateString}') for repair order {RepairOrderId}. Clamping to valid range.",
-                                    changeDate, dateString, repairOrderId);
-                                changeDate = Mitchell1Schema.ClampToValidRange(changeDate);
-                            }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            logger.LogWarning(
-                                "LastChangeDate_String column missing or null for repair order {RepairOrderId}. Using current UTC time.",
+                            logger.LogError(ex,
+                                "Failed to read LastChangeDate for repair order {RepairOrderId}. Using current UTC time instead.",
                                 repairOrderId);
                             changeDate = DateTime.UtcNow;
                         }
+
+                        Dictionary<string, object> values = BuildRepairOrderValues(reader, columns, repairOrderId);
+                        await UpsertRepairOrderInOdooAsync(appSettings.Odoo.RepairOrderModel, repairOrderId, values, cancellationToken);
+
+                        processed++;
+                        newestChangeDate = changeDate;
+                        newestRepairOrderId = repairOrderId;
                     }
                     catch (Exception ex)
                     {
                         logger.LogError(ex,
-                            "Failed to read LastChangeDate for repair order {RepairOrderId}. Using current UTC time instead.",
-                            repairOrderId);
-                        changeDate = DateTime.UtcNow;
+                            "Failed to process repair order {RepairOrderId}. Skipping this record and continuing.",
+                            reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn)));
                     }
-
-                    Dictionary<string, object> values = BuildRepairOrderValues(reader, columns, repairOrderId);
-                    await UpsertRepairOrderInOdooAsync(appSettings.Odoo.RepairOrderModel, repairOrderId, values, cancellationToken);
-
-                    processed++;
-                    newestChangeDate = changeDate;
-                    newestRepairOrderId = repairOrderId;
                 }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex,
-                        "Failed to process repair order {RepairOrderId}. Skipping this record and continuing.",
-                        reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn)));
-                }
+            }
+            catch (Exception ex)
+            {
+                syncState.MarkRepairOrderError(ex.Message);
+                logger.LogError(ex, "Error polling Mitchell1 Repair Order changes");
+                throw;
             }
 
             if (newestChangeDate.HasValue && newestRepairOrderId.HasValue)
@@ -152,46 +164,50 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
                 syncState.MarkRepairOrderSuccess(newestChangeDate, newestRepairOrderId, processed);
             }
 
-            logger.LogInformation("Repair order polling completed. Processed {Count} repair order change(s)", processed);
+            totalProcessed += processed;
+            logger.LogInformation("Repair order batch completed. Processed {Count} repair order(s) this batch, {Total} total", processed, totalProcessed);
 
-            // Now sync line items
-            await PollAndSyncLineItemsAsync(cancellationToken);
+            if (processed < appSettings.Sync.BatchSize)
+            {
+                break;
+            }
         }
-        catch (Exception ex)
-        {
-            syncState.MarkRepairOrderError(ex.Message);
-            logger.LogError(ex, "Error polling Mitchell1 Repair Order changes");
-            throw;
-        }
+
+        // Sync line items after all repair orders are caught up
+        await PollAndSyncLineItemsAsync(cancellationToken);
     }
 
     private async Task PollAndSyncLineItemsAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation("Starting repair order line item poll. Last processed: ChangeDate={LastChangeDate:O}, LineItemId={LastLineItemId}",
-            syncState.LastProcessedRepairOrderLineItemChangeDateUtc ?? DateTime.MinValue,
-            syncState.LastProcessedRepairOrderLineItemId ?? 0);
+        int totalProcessed = 0;
 
-        int processed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestLineItemId = null;
-
-        try
+        while (true)
         {
-            string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
-            await using var connection = new SqlConnection(connectionString);
-            await connection.OpenAsync(cancellationToken);
+            logger.LogInformation("Starting repair order line item poll. Last processed: ChangeDate={LastChangeDate:O}, LineItemId={LastLineItemId}",
+                syncState.LastProcessedRepairOrderLineItemChangeDateUtc ?? DateTime.MinValue,
+                syncState.LastProcessedRepairOrderLineItemId ?? 0);
 
-            string lineItemTable = QuoteIdentifier(Mitchell1Schema.LineItemTable);
-            string sequenceTable = QuoteIdentifier(Mitchell1Schema.RepairOrderLineItemSequenceTable);
-            string lineItemIdColumn = QuoteIdentifier(Mitchell1Schema.LineItemIdColumn);
-            string repairOrderIdColumn = QuoteIdentifier(Mitchell1Schema.RepairOrderIdColumn);
-            string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+            int processed = 0;
+            DateTime? newestChangeDate = null;
+            long? newestLineItemId = null;
 
-            DateTime lastChangeDate = syncState.LastProcessedRepairOrderLineItemChangeDateUtc ?? DateTime.MinValue;
-            long lastLineItemId = syncState.LastProcessedRepairOrderLineItemId ?? 0;
+            try
+            {
+                string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken);
 
-            // Join LineItem with RepairOrderLineItemSequence to get RepairOrderId correlation
-            string query = $@"
+                string lineItemTable = QuoteIdentifier(Mitchell1Schema.LineItemTable);
+                string sequenceTable = QuoteIdentifier(Mitchell1Schema.RepairOrderLineItemSequenceTable);
+                string lineItemIdColumn = QuoteIdentifier(Mitchell1Schema.LineItemIdColumn);
+                string repairOrderIdColumn = QuoteIdentifier(Mitchell1Schema.RepairOrderIdColumn);
+                string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+
+                DateTime lastChangeDate = syncState.LastProcessedRepairOrderLineItemChangeDateUtc ?? DateTime.MinValue;
+                long lastLineItemId = syncState.LastProcessedRepairOrderLineItemId ?? 0;
+
+                // Join LineItem with RepairOrderLineItemSequence to get RepairOrderId correlation
+                string query = $@"
 SELECT TOP (@BatchSize) 
     li.*, 
     seq.{repairOrderIdColumn},
@@ -202,77 +218,83 @@ WHERE (li.{changeDateColumn} > @LastChangeDate)
    OR (li.{changeDateColumn} = @LastChangeDate AND li.{lineItemIdColumn} > @LastLineItemId)
 ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
 
-            await using var command = new SqlCommand(query, connection);
-            command.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize);
-            command.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDate;
-            command.Parameters.AddWithValue("@LastLineItemId", lastLineItemId);
+                await using var command = new SqlCommand(query, connection);
+                command.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize);
+                command.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = lastChangeDate;
+                command.Parameters.AddWithValue("@LastLineItemId", lastLineItemId);
 
-            await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+                await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
 
-            var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int changeDateStringOrdinal = -1;
-            foreach (var column in reader.GetColumnSchema())
-            {
-                if (!string.IsNullOrWhiteSpace(column.ColumnName))
+                var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int changeDateStringOrdinal = -1;
+                foreach (var column in reader.GetColumnSchema())
                 {
-                    columns.Add(column.ColumnName);
-                    if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(column.ColumnName))
                     {
-                        changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
+                        columns.Add(column.ColumnName);
+                        if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
+                        {
+                            changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
+                        }
                     }
                 }
-            }
 
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                try
+                while (await reader.ReadAsync(cancellationToken))
                 {
-                    long lineItemId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.LineItemIdColumn));
-                    long repairOrderId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn));
-
-                    DateTime changeDate;
                     try
                     {
-                        if (changeDateStringOrdinal >= 0 && !reader.IsDBNull(changeDateStringOrdinal))
+                        long lineItemId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.LineItemIdColumn));
+                        long repairOrderId = reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.RepairOrderIdColumn));
+
+                        DateTime changeDate;
+                        try
                         {
-                            string dateString = reader.GetString(changeDateStringOrdinal);
-                            if (DateTime.TryParse(dateString, out changeDate))
+                            if (changeDateStringOrdinal >= 0 && !reader.IsDBNull(changeDateStringOrdinal))
                             {
-                                changeDate = changeDate.Kind == DateTimeKind.Utc ? changeDate : changeDate.ToUniversalTime();
+                                string dateString = reader.GetString(changeDateStringOrdinal);
+                                if (DateTime.TryParse(dateString, out changeDate))
+                                {
+                                    changeDate = changeDate.Kind == DateTimeKind.Utc ? changeDate : changeDate.ToUniversalTime();
+                                }
+                                else
+                                {
+                                    changeDate = DateTime.UtcNow;
+                                }
+
+                                if (!Mitchell1Schema.IsValidSqlDateTime(changeDate))
+                                {
+                                    changeDate = Mitchell1Schema.ClampToValidRange(changeDate);
+                                }
                             }
                             else
                             {
                                 changeDate = DateTime.UtcNow;
                             }
-
-                            if (!Mitchell1Schema.IsValidSqlDateTime(changeDate))
-                            {
-                                changeDate = Mitchell1Schema.ClampToValidRange(changeDate);
-                            }
                         }
-                        else
+                        catch
                         {
                             changeDate = DateTime.UtcNow;
                         }
+
+                        Dictionary<string, object> values = BuildLineItemValues(reader, columns, lineItemId, repairOrderId);
+                        await UpsertLineItemInOdooAsync(appSettings.Odoo.RepairOrderLineItemModel, lineItemId, values, cancellationToken);
+
+                        processed++;
+                        newestChangeDate = changeDate;
+                        newestLineItemId = lineItemId;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        changeDate = DateTime.UtcNow;
+                        logger.LogError(ex,
+                            "Failed to process line item {LineItemId}. Skipping this record and continuing.",
+                            reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.LineItemIdColumn)));
                     }
-
-                    Dictionary<string, object> values = BuildLineItemValues(reader, columns, lineItemId, repairOrderId);
-                    await UpsertLineItemInOdooAsync(appSettings.Odoo.RepairOrderLineItemModel, lineItemId, values, cancellationToken);
-
-                    processed++;
-                    newestChangeDate = changeDate;
-                    newestLineItemId = lineItemId;
                 }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex,
-                        "Failed to process line item {LineItemId}. Skipping this record and continuing.",
-                        reader.GetInt32(reader.GetOrdinal(Mitchell1Schema.LineItemIdColumn)));
-                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error polling Mitchell1 Repair Order Line Items");
+                break;
             }
 
             if (newestChangeDate.HasValue && newestLineItemId.HasValue)
@@ -280,11 +302,14 @@ ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
                 syncState.MarkRepairOrderLineItemSuccess(newestChangeDate, newestLineItemId, processed);
             }
 
-            logger.LogInformation("Repair order line item polling completed. Processed {Count} line item change(s)", processed);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error polling Mitchell1 Repair Order Line Items");
+            totalProcessed += processed;
+            logger.LogInformation("Repair order line item batch completed. Processed {Count} line item(s) this batch, {Total} total", processed, totalProcessed);
+
+            if (processed < appSettings.Sync.BatchSize)
+            {
+                // Fewer than a full batch means we've caught up
+                break;
+            }
         }
     }
 
@@ -295,73 +320,43 @@ ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
         CancellationToken cancellationToken)
     {
         var snakeCaseValues = ConvertKeysToSnakeCase(values);
+        string cacheKey = $"line_item:{lineItemId}";
 
-        var existingRecord = await FindLineItemByIdAsync(model, lineItemId, cancellationToken);
-        if (existingRecord.HasValue)
+        if (!hashCache.HasChangedAndUpdate(cacheKey, snakeCaseValues))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
+            return;
+        }
 
-            bool hasChanges = false;
-            foreach (var (key, newValue) in snakeCaseValues)
-            {
-                if (key == "line_item_id") continue;
-
-                if (!existingValues.TryGetProperty(key, out var existingValueElement))
-                {
-                    hasChanges = true;
-                    break;
-                }
-
-                string? newValueStr = newValue?.ToString();
-                string? existingValueStr = existingValueElement.ValueKind == System.Text.Json.JsonValueKind.False || existingValueElement.ValueKind == System.Text.Json.JsonValueKind.True
-                    ? existingValueElement.GetBoolean().ToString()
-                    : existingValueElement.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? existingValueElement.GetString()
-                        : existingValueElement.ToString();
-
-                if (newValueStr != existingValueStr)
-                {
-                    hasChanges = true;
-                    break;
-                }
-            }
-
-            if (hasChanges)
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    model,
-                    "write",
-                    new object[] { new[] { existingId }, snakeCaseValues },
-                    null,
-                    cancellationToken);
-                logger.LogInformation("Updated line item {LineItemId} in Odoo staging table", lineItemId);
-            }
+        int? existingId = await FindLineItemByIdAsync(model, lineItemId, cancellationToken);
+        if (existingId.HasValue)
+        {
+            await odooRpcClient.ExecuteKwAsync(
+                model,
+                "write",
+                new object[] { new[] { existingId.Value }, snakeCaseValues },
+                null,
+                cancellationToken);
+            logger.LogInformation("Updated line item {LineItemId} in Odoo staging table", lineItemId);
         }
         else
         {
-            var result = await odooRpcClient.ExecuteKwAsync(
+            await odooRpcClient.ExecuteKwAsync(
                 model,
                 "create",
                 new object[] { snakeCaseValues },
                 null,
                 cancellationToken);
-            int newId = result.GetInt32();
             logger.LogInformation("Created line item {LineItemId} in Odoo staging table", lineItemId);
         }
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindLineItemByIdAsync(
+    private async Task<int?> FindLineItemByIdAsync(
         string model,
         long lineItemId,
         CancellationToken cancellationToken)
     {
         object[] domain = { new object[] { "line_item_id", "=", lineItemId } };
-        var kwargs = new Dictionary<string, object>
-        {
-            ["fields"] = new[] { "id", "line_item_id", "repair_order_id", "description" },
-            ["limit"] = 1
-        };
+        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
 
         var result = await odooRpcClient.ExecuteKwAsync(
             model,
@@ -371,13 +366,9 @@ ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
             cancellationToken);
 
         if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-        {
             return null;
-        }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
+        return result[0].GetProperty("id").GetInt32();
     }
 
     private static Dictionary<string, object> BuildLineItemValues(
@@ -429,80 +420,44 @@ ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
         Dictionary<string, object> values,
         CancellationToken cancellationToken)
     {
-        // Convert keys to snake_case for Odoo
         var snakeCaseValues = ConvertKeysToSnakeCase(values);
+        string cacheKey = $"repair_order:{repairOrderId}";
 
-        var existingRecord = await FindRepairOrderByIdAsync(model, repairOrderId, cancellationToken);
-        if (existingRecord.HasValue)
+        if (!hashCache.HasChangedAndUpdate(cacheKey, snakeCaseValues))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
+            return;
+        }
 
-            // Only write if values have actually changed
-            bool hasChanges = false;
-            foreach (var (key, newValue) in snakeCaseValues)
-            {
-                if (key == "repair_order_id") continue; // Skip ID field (it's the lookup key)
-
-                if (!existingValues.TryGetProperty(key, out var existingValueElement))
-                {
-                    hasChanges = true;
-                    break;
-                }
-
-                string? newValueStr = newValue?.ToString();
-                string? existingValueStr = existingValueElement.ValueKind == System.Text.Json.JsonValueKind.False || existingValueElement.ValueKind == System.Text.Json.JsonValueKind.True
-                    ? existingValueElement.GetBoolean().ToString()
-                    : existingValueElement.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? existingValueElement.GetString()
-                        : existingValueElement.ToString();
-
-                if (newValueStr != existingValueStr)
-                {
-                    hasChanges = true;
-                    break;
-                }
-            }
-
-            if (hasChanges)
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    model,
-                    "write",
-                    new object[] { new[] { existingId }, snakeCaseValues },
-                    null,
-                    cancellationToken);
-                logger.LogInformation("Updated repair order {RepairOrderId} in Odoo staging table", repairOrderId);
-            }
-            else
-            {
-                logger.LogDebug("Repair order {RepairOrderId} unchanged, skipping write", repairOrderId);
-            }
+        int? existingId = await FindRepairOrderByIdAsync(model, repairOrderId, cancellationToken);
+        if (existingId.HasValue)
+        {
+            await odooRpcClient.ExecuteKwAsync(
+                model,
+                "write",
+                new object[] { new[] { existingId.Value }, snakeCaseValues },
+                null,
+                cancellationToken);
+            logger.LogInformation("Updated repair order {RepairOrderId} in Odoo staging table", repairOrderId);
         }
         else
         {
-            var result = await odooRpcClient.ExecuteKwAsync(
+            await odooRpcClient.ExecuteKwAsync(
                 model,
                 "create",
                 new object[] { snakeCaseValues },
                 null,
                 cancellationToken);
-            int newId = result.GetInt32();
             logger.LogInformation("Created repair order {RepairOrderId} in Odoo staging table", repairOrderId);
         }
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindRepairOrderByIdAsync(
+    private async Task<int?> FindRepairOrderByIdAsync(
         string model,
         long repairOrderId,
         CancellationToken cancellationToken)
     {
         object[] domain = { new object[] { "repair_order_id", "=", repairOrderId } };
-        var kwargs = new Dictionary<string, object>
-        {
-            ["fields"] = new[] { "id", "repair_order_id", "cust_id", "vehicle_id" },
-            ["limit"] = 1
-        };
+        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
 
         var result = await odooRpcClient.ExecuteKwAsync(
             model,
@@ -512,13 +467,9 @@ ORDER BY li.{changeDateColumn} ASC, li.{lineItemIdColumn} ASC;";
             cancellationToken);
 
         if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-        {
             return null;
-        }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
+        return result[0].GetProperty("id").GetInt32();
     }
 
     private static Dictionary<string, object> BuildRepairOrderValues(

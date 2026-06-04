@@ -16,6 +16,8 @@ partial class SettingsForm
     private System.Windows.Forms.TextBox odooUsernameTextBox;
     private System.Windows.Forms.Label odooPasswordLabel;
     private System.Windows.Forms.TextBox odooPasswordTextBox;
+    private System.Windows.Forms.Label batchSizeLabel;
+    private System.Windows.Forms.NumericUpDown batchSizeNumericUpDown;
     private System.Windows.Forms.Button saveButton;
     private System.Windows.Forms.Button reloadButton;
     private System.Windows.Forms.Label statusLabel;
@@ -47,6 +49,8 @@ partial class SettingsForm
         reloadButton = new Button();
         statusLabel = new Label();
         textBox1 = new TextBox();
+        batchSizeLabel = new Label();
+        batchSizeNumericUpDown = new NumericUpDown();
         SuspendLayout();
         // 
         // sqlSectionLabel
@@ -150,9 +154,27 @@ partial class SettingsForm
         odooPasswordTextBox.TabIndex = 11;
         odooPasswordTextBox.UseSystemPasswordChar = true;
         // 
+        // batchSizeLabel
+        // 
+        batchSizeLabel.AutoSize = true;
+        batchSizeLabel.Location = new Point(24, 204);
+        batchSizeLabel.Name = "batchSizeLabel";
+        batchSizeLabel.Size = new Size(60, 15);
+        batchSizeLabel.TabIndex = 16;
+        batchSizeLabel.Text = "Batch Size";
+        // 
+        // batchSizeNumericUpDown
+        // 
+        batchSizeNumericUpDown.Location = new Point(96, 202);
+        batchSizeNumericUpDown.Minimum = 1;
+        batchSizeNumericUpDown.Maximum = 10000;
+        batchSizeNumericUpDown.Name = "batchSizeNumericUpDown";
+        batchSizeNumericUpDown.Size = new Size(80, 23);
+        batchSizeNumericUpDown.TabIndex = 17;
+        // 
         // saveButton
         // 
-        saveButton.Location = new Point(20, 221);
+        saveButton.Location = new Point(20, 246);
         saveButton.Name = "saveButton";
         saveButton.Size = new Size(130, 34);
         saveButton.TabIndex = 12;
@@ -162,7 +184,7 @@ partial class SettingsForm
         // 
         // reloadButton
         // 
-        reloadButton.Location = new Point(156, 221);
+        reloadButton.Location = new Point(156, 246);
         reloadButton.Name = "reloadButton";
         reloadButton.Size = new Size(98, 34);
         reloadButton.TabIndex = 13;
@@ -194,11 +216,13 @@ partial class SettingsForm
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         AutoScroll = true;
-        ClientSize = new Size(647, 281);
+        ClientSize = new Size(647, 306);
         Controls.Add(textBox1);
         Controls.Add(statusLabel);
         Controls.Add(reloadButton);
         Controls.Add(saveButton);
+        Controls.Add(batchSizeNumericUpDown);
+        Controls.Add(batchSizeLabel);
         Controls.Add(odooPasswordTextBox);
         Controls.Add(odooPasswordLabel);
         Controls.Add(odooUsernameTextBox);

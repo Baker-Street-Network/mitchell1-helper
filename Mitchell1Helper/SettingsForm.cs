@@ -124,6 +124,8 @@ public partial class SettingsForm : Form
         odooPasswordLabel.Text = "API Key";
         odooPasswordTextBox.PasswordChar = '\0';
 
+        batchSizeNumericUpDown.Value = Math.Clamp(_settings.Sync.BatchSize, 1, 10000);
+
         statusLabel.Text = "Settings loaded.";
         statusLabel.ForeColor = Color.DarkSlateGray;
     }
@@ -138,6 +140,8 @@ public partial class SettingsForm : Form
             _settings.Odoo.Database = odooDatabaseTextBox.Text.Trim();
             _settings.Odoo.Username = odooUsernameTextBox.Text.Trim();
             _settings.Odoo.ApiKey = odooPasswordTextBox.Text.Trim();
+
+            _settings.Sync.BatchSize = (int)batchSizeNumericUpDown.Value;
 
             _settings.Save();
 

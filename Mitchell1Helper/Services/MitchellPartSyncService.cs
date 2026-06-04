@@ -9,6 +9,7 @@ public class MitchellPartSyncService(
     AppSettings appSettings,
     OdooRpcClient odooRpcClient,
     SyncState syncState,
+    RecordHashCache hashCache,
     ILogger<MitchellPartSyncService> logger)
 {
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -178,105 +179,69 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
         Dictionary<string, object> values,
         CancellationToken cancellationToken)
     {
-        // Convert keys to snake_case for Odoo
         var snakeCaseValues = ConvertKeysToSnakeCase(values);
+        string cacheKey = $"part:{partId}";
 
-        var existingRecord = await FindPartByIdAsync(model, partId, cancellationToken);
-        if (existingRecord.HasValue)
+        if (!hashCache.HasChangedAndUpdate(cacheKey, snakeCaseValues))
         {
-            int existingId = existingRecord.Value.id;
-            var existingValues = existingRecord.Value.values;
-
-            // Only write if values have actually changed
-            bool hasChanges = false;
-            foreach (var (key, newValue) in snakeCaseValues)
-            {
-                if (key == "part_id") continue; // Skip ID field (it's the lookup key)
-
-                if (!existingValues.TryGetProperty(key, out var existingValueElement))
-                {
-                    hasChanges = true;
-                    break;
-                }
-
-                string? newValueStr = newValue?.ToString();
-                string? existingValueStr = existingValueElement.ValueKind == System.Text.Json.JsonValueKind.False || existingValueElement.ValueKind == System.Text.Json.JsonValueKind.True
-                    ? existingValueElement.GetBoolean().ToString()
-                    : existingValueElement.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? existingValueElement.GetString()
-                        : existingValueElement.ToString();
-
-                if (newValueStr != existingValueStr)
-                {
-                    hasChanges = true;
-                    break;
-                }
-            }
-
-            if (hasChanges)
-            {
-                await odooRpcClient.ExecuteKwAsync(
-                    model,
-                    "write",
-                    new object[] { new[] { existingId }, snakeCaseValues },
-                    null,
-                    cancellationToken);
-                logger.LogInformation("Updated part {PartId} in Odoo staging table (part_id={PartId})", existingId, partId);
-            }
-            else
-            {
-                logger.LogDebug("Part {PartId} unchanged, skipping write (part_id={PartId})", existingId, partId);
-            }
+            return;
         }
-        else
+
+        int? existingId = await FindPartByIdAsync(model, partId, cancellationToken);
+        if (existingId.HasValue)
         {
-            var result = await odooRpcClient.ExecuteKwAsync(
+            await odooRpcClient.ExecuteKwAsync(
                 model,
-                "create",
-                new object[] { snakeCaseValues },
+                "write",
+                new object[] { new[] { existingId.Value }, snakeCaseValues },
                 null,
                 cancellationToken);
-            int newId = result.GetInt32();
-            logger.LogInformation("Created part {PartId} in Odoo staging table (part_id={PartId})", newId, partId);
+            logger.LogInformation("Updated part {PartId} in Odoo staging table", partId);
+            return;
         }
+
+        var result = await odooRpcClient.ExecuteKwAsync(
+            model,
+            "create",
+            new object[] { snakeCaseValues },
+            null,
+            cancellationToken);
+        logger.LogInformation("Created part {PartId} in Odoo staging table", partId);
     }
 
     private async Task ArchivePartInOdooAsync(string model, long partId, CancellationToken cancellationToken)
     {
-        var existingRecord = await FindPartByIdAsync(model, partId, cancellationToken);
-        if (existingRecord.HasValue)
-        {
-            int existingId = existingRecord.Value.id;
-            var archiveValues = new Dictionary<string, object>
-            {
-                ["active"] = false
-            };
+        string cacheKey = $"part:{partId}";
+        var archiveValues = new Dictionary<string, object> { ["active"] = false };
 
-            await odooRpcClient.ExecuteKwAsync(
-                model,
-                "write",
-                new object[] { new[] { existingId }, archiveValues },
-                null,
-                cancellationToken);
-            logger.LogInformation("Archived part {PartId} in Odoo staging table (part_id={PartId})", existingId, partId);
+        if (!hashCache.HasChangedAndUpdate(cacheKey, archiveValues))
+        {
+            return;
         }
-        else
+
+        int? existingId = await FindPartByIdAsync(model, partId, cancellationToken);
+        if (!existingId.HasValue)
         {
             logger.LogDebug("Part not found in Odoo staging table for archive (part_id={PartId})", partId);
+            return;
         }
+
+        await odooRpcClient.ExecuteKwAsync(
+            model,
+            "write",
+            new object[] { new[] { existingId.Value }, archiveValues },
+            null,
+            cancellationToken);
+        logger.LogInformation("Archived part {PartId} in Odoo staging table", partId);
     }
 
-    private async Task<(int id, System.Text.Json.JsonElement values)?> FindPartByIdAsync(
+    private async Task<int?> FindPartByIdAsync(
         string model,
         long partId,
         CancellationToken cancellationToken)
     {
         object[] domain = { new object[] { "part_id", "=", partId } };
-        var kwargs = new Dictionary<string, object>
-        {
-            ["fields"] = new[] { "id", "part_id", "description", "active" },
-            ["limit"] = 1
-        };
+        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
 
         var result = await odooRpcClient.ExecuteKwAsync(
             model,
@@ -286,13 +251,9 @@ ORDER BY {changeDateColumn} ASC, {idColumn} ASC;";
             cancellationToken);
 
         if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-        {
             return null;
-        }
 
-        var record = result[0];
-        int id = record.GetProperty("id").GetInt32();
-        return (id, record);
+        return result[0].GetProperty("id").GetInt32();
     }
 
     private static Dictionary<string, object> BuildPartValues(

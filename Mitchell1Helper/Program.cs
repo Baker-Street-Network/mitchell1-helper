@@ -24,6 +24,7 @@ internal static class Program
 			{
 				services.AddSingleton(settings);
 				services.AddSingleton<SyncState>();
+				services.AddSingleton<RecordHashCache>();
 				services.AddSingleton<MitchellCustomerSyncService>();
 				services.AddSingleton<MitchellVendorSyncService>();
 				services.AddSingleton<MitchellPartSyncService>();
