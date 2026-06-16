@@ -35,15 +35,12 @@ public class AppSettings
         public string POHeaderModel { get; set; } = "mitchell.po";
         public string PODetailModel { get; set; } = "mitchell.po.detail";
         public string ExternalRefPrefix { get; set; } = "MITCHELL1-";
-        public string WebsocketSecret { get; set; } = "";
-        public string WebsocketChannel { get; set; } = "record_updated";
     }
 
     public class SyncConfig
     {
         public int PollIntervalSeconds { get; set; } = 30;
         public int BatchSize { get; set; } = 200;
-        public int HeartbeatIntervalSeconds { get; set; } = 15;
     }
 
     public class UpdateConfig

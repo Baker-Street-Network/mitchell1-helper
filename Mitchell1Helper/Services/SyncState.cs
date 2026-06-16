@@ -11,7 +11,6 @@ public class SyncState
     private readonly object _lock = new();
 
     public DateTime? LastSuccessfulPollUtc { get; private set; }
-    public DateTime? LastHeartbeatSentUtc { get; private set; }
     public DateTime? LastProcessedChangeDateUtc { get; private set; }
     public long? LastProcessedCustomerId { get; private set; }
     public string? LastError { get; private set; }
@@ -203,15 +202,6 @@ public class SyncState
         }
     }
 
-    public void MarkHeartbeatSent()
-    {
-        lock (_lock)
-        {
-            LastHeartbeatSentUtc = DateTime.UtcNow;
-            Save();
-        }
-    }
-
     private void Load()
     {
         try
@@ -226,7 +216,6 @@ public class SyncState
             if (state != null)
             {
                 LastSuccessfulPollUtc = state.LastSuccessfulPollUtc;
-                LastHeartbeatSentUtc = state.LastHeartbeatSentUtc;
                 LastProcessedChangeDateUtc = state.LastProcessedChangeDateUtc;
                 LastProcessedCustomerId = state.LastProcessedCustomerId;
                 LastError = state.LastError;
@@ -273,7 +262,6 @@ public class SyncState
             var state = new SyncStateData
             {
                 LastSuccessfulPollUtc = LastSuccessfulPollUtc,
-                LastHeartbeatSentUtc = LastHeartbeatSentUtc,
                 LastProcessedChangeDateUtc = LastProcessedChangeDateUtc,
                 LastProcessedCustomerId = LastProcessedCustomerId,
                 LastError = LastError,
@@ -328,7 +316,6 @@ public class SyncState
     private class SyncStateData
     {
         public DateTime? LastSuccessfulPollUtc { get; set; }
-        public DateTime? LastHeartbeatSentUtc { get; set; }
         public DateTime? LastProcessedChangeDateUtc { get; set; }
         public long? LastProcessedCustomerId { get; set; }
         public string? LastError { get; set; }

@@ -158,7 +158,6 @@ public partial class SettingsForm : Form
     private void UpdateSyncStatus()
     {
         string lastPoll = _syncState.LastSuccessfulPollUtc?.ToLocalTime().ToString("g") ?? "never";
-        string lastHeartbeat = _syncState.LastHeartbeatSentUtc?.ToLocalTime().ToString("g") ?? "never";
         string lastChange = _syncState.LastProcessedChangeDateUtc?.ToString("u") ?? "none";
         string lastId = _syncState.LastProcessedCustomerId?.ToString() ?? "none";
         string err = string.IsNullOrWhiteSpace(_syncState.LastError) ? "none" : _syncState.LastError;
@@ -190,7 +189,6 @@ public partial class SettingsForm : Form
 
         textBox1.Text =
             $"=== CUSTOMERS ===" + Environment.NewLine +
-            $"Last heartbeat push: {lastHeartbeat}" + Environment.NewLine +
             $"Last poll: {lastPoll}" + Environment.NewLine +
             $"Last change processed (UTC): {lastChange}" + Environment.NewLine +
             $"Last record ID: {lastId}" + Environment.NewLine +

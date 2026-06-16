@@ -37,8 +37,6 @@ internal static class Program
 					});
 
 				services.AddHostedService<Mitchell1BackgroundService>();
-				services.AddHostedService<OdooHeartbeatWebSocketService>();
-				services.AddHostedService<OdooCustomerWebSocketListenerService>();
 				services.AddHostedService<UpdateService>();
 				services.AddHostedService<WebServerHostedService>();
 
