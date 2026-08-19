@@ -18,6 +18,7 @@ partial class SettingsForm
     private System.Windows.Forms.TextBox odooPasswordTextBox;
     private System.Windows.Forms.Label batchSizeLabel;
     private System.Windows.Forms.NumericUpDown batchSizeNumericUpDown;
+    private System.Windows.Forms.Button testConnectionButton;
     private System.Windows.Forms.Button saveButton;
     private System.Windows.Forms.Button reloadButton;
     private System.Windows.Forms.Label statusLabel;
@@ -45,6 +46,7 @@ partial class SettingsForm
         odooUsernameTextBox = new TextBox();
         odooPasswordLabel = new Label();
         odooPasswordTextBox = new TextBox();
+        testConnectionButton = new Button();
         saveButton = new Button();
         reloadButton = new Button();
         statusLabel = new Label();
@@ -76,9 +78,19 @@ partial class SettingsForm
         // 
         sqlConnectionStringTextBox.Location = new Point(133, 47);
         sqlConnectionStringTextBox.Name = "sqlConnectionStringTextBox";
-        sqlConnectionStringTextBox.Size = new Size(501, 23);
+        sqlConnectionStringTextBox.Size = new Size(365, 23);
         sqlConnectionStringTextBox.TabIndex = 2;
-        // 
+        //
+        // testConnectionButton
+        //
+        testConnectionButton.Location = new Point(504, 45);
+        testConnectionButton.Name = "testConnectionButton";
+        testConnectionButton.Size = new Size(130, 27);
+        testConnectionButton.TabIndex = 18;
+        testConnectionButton.Text = "Test Connection";
+        testConnectionButton.UseVisualStyleBackColor = true;
+        testConnectionButton.Click += testConnectionButton_Click;
+        //
         // odooSectionLabel
         // 
         odooSectionLabel.AutoSize = true;
@@ -232,6 +244,7 @@ partial class SettingsForm
         Controls.Add(odooUrlTextBox);
         Controls.Add(odooUrlLabel);
         Controls.Add(odooSectionLabel);
+        Controls.Add(testConnectionButton);
         Controls.Add(sqlConnectionStringTextBox);
         Controls.Add(sqlConnectionLabel);
         Controls.Add(sqlSectionLabel);

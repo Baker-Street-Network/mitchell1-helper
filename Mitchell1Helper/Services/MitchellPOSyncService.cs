@@ -1,5 +1,4 @@
 using System.Data;
-using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 
@@ -11,90 +10,22 @@ public class MitchellPOSyncService(
     SyncState syncState,
     RecordHashCache hashCache,
     ILogger<MitchellPOSyncService> logger)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
 {
-    private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
-
     private DateTime _lastChangeDateUtc = syncState.LastProcessedPOChangeDateUtc ?? DateTime.MinValue;
     private long _lastPOMasterId = syncState.LastProcessedPOMasterId ?? 0;
 
-    /// <summary>
-    /// Converts PascalCase field names to snake_case for Odoo compatibility.
-    /// Handles acronyms correctly: POMasterId -> po_master_id (not p_o_master_id)
-    /// </summary>
-    private static string ToSnakeCase(string pascalCase)
-    {
-        if (string.IsNullOrEmpty(pascalCase))
-            return pascalCase;
-
-        var result = new System.Text.StringBuilder();
-
-        for (int i = 0; i < pascalCase.Length; i++)
-        {
-            char current = pascalCase[i];
-            bool isUpper = char.IsUpper(current);
-
-            // Add underscore before uppercase letter if:
-            // 1. Not the first character
-            // 2. Previous character is lowercase OR next character is lowercase (end of acronym)
-            if (i > 0 && isUpper)
-            {
-                char prev = pascalCase[i - 1];
-                bool prevIsLower = char.IsLower(prev);
-
-                // Check if this is the end of an acronym (e.g., "POMaster" -> M is end of "PO")
-                bool endOfAcronym = false;
-                if (i + 1 < pascalCase.Length)
-                {
-                    char next = pascalCase[i + 1];
-                    endOfAcronym = char.IsUpper(prev) && char.IsLower(next);
-                }
-
-                if (prevIsLower || endOfAcronym)
-                {
-                    result.Append('_');
-                }
-            }
-
-            result.Append(char.ToLowerInvariant(current));
-        }
-
-        return result.ToString();
-    }
-
-    /// <summary>
-    /// Converts dictionary keys from PascalCase to snake_case for Odoo.
-    /// </summary>
-    private static Dictionary<string, object> ConvertKeysToSnakeCase(Dictionary<string, object> pascalCaseDict)
-    {
-        var snakeCaseDict = new Dictionary<string, object>();
-        foreach (var (key, value) in pascalCaseDict)
-        {
-            string snakeCaseKey = ToSnakeCase(key);
-            snakeCaseDict[snakeCaseKey] = value;
-        }
-        return snakeCaseDict;
-    }
-
-    private static string EnsureTrustServerCertificate(string connectionString)
-    {
-        var builder = new SqlConnectionStringBuilder(connectionString)
-        {
-            TrustServerCertificate = true
-        };
-        return builder.ConnectionString;
-    }
-
     public async Task PollAndSyncAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(appSettings.Sql.ConnectionString))
+        if (string.IsNullOrWhiteSpace(AppSettings.Sql.ConnectionString))
         {
-            const string message = "SQL connection string is empty. Update AppData/Mitchell1Helper/settings.json.";
-            syncState.MarkPOError(message);
-            logger.LogWarning(message);
+            const string msg = "SQL connection string is empty. Update AppData/Mitchell1Helper/settings.json.";
+            SyncState.MarkPOError(msg);
+            logger.LogWarning(msg);
             return;
         }
 
-        logger.LogInformation("Starting PO poll. Last processed: ChangeDate={LastChangeDate:O}, POMasterId={LastPOMasterId}",
+        logger.LogInformation("Starting PO poll. Last: ChangeDate={Date:O}, POMasterId={Id}",
             _lastChangeDateUtc, _lastPOMasterId);
 
         int processedHeaders = 0;
@@ -104,43 +35,23 @@ public class MitchellPOSyncService(
 
         try
         {
-            string connectionString = EnsureTrustServerCertificate(appSettings.Sql.ConnectionString);
-            await using var connection = new SqlConnection(connectionString);
-            await connection.OpenAsync(cancellationToken);
+            string cs = EnsureTrustServerCertificate(AppSettings.Sql.ConnectionString);
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync(cancellationToken);
 
-            // Sync PO Headers
+            // ── PO Headers ────────────────────────────────────────────────────
+
             string masterTable = QuoteIdentifier(Mitchell1Schema.POMasterTable);
-            string masterIdColumn = QuoteIdentifier(Mitchell1Schema.POMasterIdColumn);
-            string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+            string masterIdCol = QuoteIdentifier(Mitchell1Schema.POMasterIdColumn);
+            string changeDateCol = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
 
-            string headerQuery = $@"
-SELECT TOP (@BatchSize) *, 
-       CONVERT(NVARCHAR(50), {changeDateColumn}, 127) AS LastChangeDate_String
-FROM {masterTable}
-WHERE ({changeDateColumn} > @LastChangeDate)
-   OR ({changeDateColumn} = @LastChangeDate AND {masterIdColumn} > @LastPOMasterId)
-ORDER BY {changeDateColumn} ASC, {masterIdColumn} ASC;";
+            await using var headerCmd = new SqlCommand(BuildCursorQuery(masterTable, masterIdCol, changeDateCol), conn);
+            headerCmd.Parameters.AddWithValue("@BatchSize", AppSettings.Sync.BatchSize);
+            headerCmd.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = _lastChangeDateUtc;
+            headerCmd.Parameters.AddWithValue("@LastId", _lastPOMasterId);
 
-            await using var headerCommand = new SqlCommand(headerQuery, connection);
-            headerCommand.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize);
-            headerCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = _lastChangeDateUtc;
-            headerCommand.Parameters.AddWithValue("@LastPOMasterId", _lastPOMasterId);
-
-            await using SqlDataReader headerReader = await headerCommand.ExecuteReaderAsync(cancellationToken);
-
-            var headerColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int changeDateStringOrdinal = -1;
-            foreach (var column in headerReader.GetColumnSchema())
-            {
-                if (!string.IsNullOrWhiteSpace(column.ColumnName))
-                {
-                    headerColumns.Add(column.ColumnName);
-                    if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
-                    {
-                        changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
-                    }
-                }
-            }
+            await using var headerReader = await headerCmd.ExecuteReaderAsync(cancellationToken);
+            var (headerColumns, headerChangeDateOrdinal) = ReadColumnSchema(headerReader);
 
             while (await headerReader.ReadAsync(cancellationToken))
             {
@@ -148,11 +59,12 @@ ORDER BY {changeDateColumn} ASC, {masterIdColumn} ASC;";
                 try
                 {
                     poMasterId = Convert.ToInt64(headerReader[Mitchell1Schema.POMasterIdColumn]);
+                    DateTime changeDate = ParseChangeDate(headerReader, headerChangeDateOrdinal, poMasterId, "PO Header", logger);
 
-                    DateTime changeDate = ParseChangeDate(headerReader, changeDateStringOrdinal, poMasterId, "PO Header");
-
-                    Dictionary<string, object> headerValues = BuildPOHeaderValues(headerReader, headerColumns);
-                    await UpsertPOHeaderInOdooAsync(headerValues, cancellationToken);
+                    var values = ConvertKeysToSnakeCase(BuildPOHeaderValues(headerReader, headerColumns));
+                    await UpsertInOdooAsync(
+                        AppSettings.Odoo.POHeaderModel, "po_master_id", poMasterId,
+                        values, $"po_header:{poMasterId}", cancellationToken);
 
                     processedHeaders++;
                     newestChangeDate = changeDate;
@@ -160,455 +72,163 @@ ORDER BY {changeDateColumn} ASC, {masterIdColumn} ASC;";
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex,
-                        "Failed to process PO header {POMasterId}. Skipping this record and continuing.",
-                        poMasterId);
+                    logger.LogError(ex, "Failed to process PO Header {Id}. Skipping.", poMasterId);
                 }
             }
 
             await headerReader.CloseAsync();
 
-            // Sync PO Details independently
-            processedDetails = await SyncPODetailsAsync(connection, cancellationToken);
+            // ── PO Details ────────────────────────────────────────────────────
+
+            processedDetails = await SyncPODetailsAsync(conn, cancellationToken);
 
             if (newestChangeDate.HasValue && newestPOMasterId.HasValue)
             {
                 _lastChangeDateUtc = newestChangeDate.Value;
                 _lastPOMasterId = newestPOMasterId.Value;
-                syncState.MarkPOSuccess(newestChangeDate, newestPOMasterId, processedHeaders, processedDetails);
+                SyncState.MarkPOSuccess(newestChangeDate, newestPOMasterId, processedHeaders, processedDetails);
             }
 
-            logger.LogInformation("PO polling completed. Processed {HeaderCount} header(s) and {DetailCount} detail(s)",
+            logger.LogInformation("PO poll completed. Headers: {Headers}, Details: {Details}",
                 processedHeaders, processedDetails);
         }
         catch (Exception ex)
         {
-            syncState.MarkPOError(ex.Message);
-            logger.LogError(ex, "Error polling Mitchell1 PO changes");
+            SyncState.MarkPOError(ex.Message);
+            logger.LogError(ex, "Error polling PO changes");
             throw;
         }
     }
 
-    private async Task<int> SyncPODetailsAsync(SqlConnection connection, CancellationToken cancellationToken)
+    private async Task<int> SyncPODetailsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
-        int processedDetails = 0;
-
-        string detailTable = QuoteIdentifier(Mitchell1Schema.PODetailTable);
-        string detailIdColumn = QuoteIdentifier(Mitchell1Schema.PODetailIdColumn);
-        string changeDateColumn = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
-
-        // Get details that have changed (based on their own LastChangeDate)
-        // This ensures we sync details independently of header changes
-        string detailQuery = $@"
-SELECT TOP (@BatchSize) *, 
-       CONVERT(NVARCHAR(50), {changeDateColumn}, 127) AS LastChangeDate_String
-FROM {detailTable}
-WHERE {changeDateColumn} > @LastChangeDate
-ORDER BY {changeDateColumn} ASC, {detailIdColumn} ASC;";
-
-        await using var detailCommand = new SqlCommand(detailQuery, connection);
-        detailCommand.Parameters.AddWithValue("@BatchSize", appSettings.Sync.BatchSize * 10); // More details than headers typically
-        detailCommand.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value = syncState.LastProcessedPODetailChangeDateUtc ?? DateTime.MinValue;
-
-        await using SqlDataReader detailReader = await detailCommand.ExecuteReaderAsync(cancellationToken);
-
-        var detailColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int changeDateStringOrdinal = -1;
-        foreach (var column in detailReader.GetColumnSchema())
-        {
-            if (!string.IsNullOrWhiteSpace(column.ColumnName))
-            {
-                detailColumns.Add(column.ColumnName);
-                if (column.ColumnName.Equals("LastChangeDate_String", StringComparison.OrdinalIgnoreCase))
-                {
-                    changeDateStringOrdinal = column.ColumnOrdinal ?? -1;
-                }
-            }
-        }
-
-        DateTime? newestDetailChangeDate = null;
+        int processed = 0;
+        DateTime? newestChangeDate = null;
         long? newestDetailId = null;
 
-        while (await detailReader.ReadAsync(cancellationToken))
+        string detailTable = QuoteIdentifier(Mitchell1Schema.PODetailTable);
+        string detailIdCol = QuoteIdentifier(Mitchell1Schema.PODetailIdColumn);
+        string changeDateCol = QuoteIdentifier(Mitchell1Schema.LastChangeDateColumn);
+
+        // Details use a simpler > filter (no tie-breaking by id) because they have their own independent cursor.
+        string query = $"""
+            SELECT TOP (@BatchSize) *,
+                   CONVERT(NVARCHAR(50), {changeDateCol}, 127) AS LastChangeDate_String
+            FROM {detailTable}
+            WHERE {changeDateCol} > @LastChangeDate
+            ORDER BY {changeDateCol} ASC, {detailIdCol} ASC;
+            """;
+
+        await using var cmd = new SqlCommand(query, conn);
+        cmd.Parameters.AddWithValue("@BatchSize", AppSettings.Sync.BatchSize * 10);
+        cmd.Parameters.Add("@LastChangeDate", SqlDbType.DateTime2).Value =
+            SyncState.LastProcessedPODetailChangeDateUtc ?? DateTime.MinValue;
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        var (columns, changeDateOrdinal) = ReadColumnSchema(reader);
+
+        while (await reader.ReadAsync(cancellationToken))
         {
             long poDetailId = 0;
             try
             {
-                poDetailId = Convert.ToInt64(detailReader[Mitchell1Schema.PODetailIdColumn]);
+                poDetailId = Convert.ToInt64(reader[Mitchell1Schema.PODetailIdColumn]);
+                DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, poDetailId, "PO Detail", logger);
 
-                DateTime changeDate = ParseChangeDate(detailReader, changeDateStringOrdinal, poDetailId, "PO Detail");
+                var values = ConvertKeysToSnakeCase(BuildPODetailValues(reader, columns));
+                await UpsertInOdooAsync(
+                    AppSettings.Odoo.PODetailModel, "po_detail_id", poDetailId,
+                    values, $"po_detail:{poDetailId}", cancellationToken);
 
-                Dictionary<string, object> detailValues = BuildPODetailValues(detailReader, detailColumns);
-                await UpsertPODetailInOdooAsync(detailValues, cancellationToken);
-
-                processedDetails++;
-                newestDetailChangeDate = changeDate;
+                processed++;
+                newestChangeDate = changeDate;
                 newestDetailId = poDetailId;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex,
-                    "Failed to process PO detail {PODetailId}. Skipping this record and continuing.",
-                    poDetailId);
+                logger.LogError(ex, "Failed to process PO Detail {Id}. Skipping.", poDetailId);
             }
         }
 
-        // Update detail-specific sync state
-        if (newestDetailChangeDate.HasValue && newestDetailId.HasValue)
-        {
-            syncState.MarkPODetailSuccess(newestDetailChangeDate, newestDetailId);
-        }
+        if (newestChangeDate.HasValue && newestDetailId.HasValue)
+            SyncState.MarkPODetailSuccess(newestChangeDate, newestDetailId);
 
-        return processedDetails;
+        return processed;
     }
 
-    private DateTime ParseChangeDate(SqlDataReader reader, int changeDateStringOrdinal, long recordId, string recordType)
-    {
-        try
-        {
-            string? dateString = null;
-            if (changeDateStringOrdinal >= 0)
-            {
-                object val = reader.GetValue(changeDateStringOrdinal);
-                dateString = val == DBNull.Value ? null : val?.ToString();
-            }
-            else
-            {
-                logger.LogWarning("{RecordType} {RecordId}: LastChangeDate_String column not found in result set!", recordType, recordId);
-            }
-
-            if (string.IsNullOrWhiteSpace(dateString))
-            {
-                logger.LogWarning("NULL or empty LastChangeDate for {RecordType} {RecordId}. Using current UTC time.", recordType, recordId);
-                return DateTime.UtcNow;
-            }
-
-            if (DateTime.TryParse(dateString, out DateTime parsed))
-            {
-                DateTime changeDate = parsed.Kind == DateTimeKind.Utc ? parsed : DateTime.SpecifyKind(parsed, DateTimeKind.Utc);
-
-                if (!Mitchell1Schema.IsValidSqlDateTime(changeDate))
-                {
-                    logger.LogWarning(
-                        "Invalid date {Date} (from string: '{DateString}') for {RecordType} {RecordId}. Clamping to valid range.",
-                        changeDate, dateString, recordType, recordId);
-                    changeDate = Mitchell1Schema.ClampToValidRange(changeDate);
-                }
-
-                return changeDate;
-            }
-
-            logger.LogWarning(
-                "Could not parse LastChangeDate string '{DateString}' for {RecordType} {RecordId}. Using current UTC time.",
-                dateString, recordType, recordId);
-            return DateTime.UtcNow;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex,
-                "Failed to read LastChangeDate for {RecordType} {RecordId}. Using current UTC time instead.",
-                recordType, recordId);
-            return DateTime.UtcNow;
-        }
-    }
-
-    private async Task UpsertPOHeaderInOdooAsync(
-        Dictionary<string, object> values,
-        CancellationToken cancellationToken)
-    {
-        if (!values.TryGetValue("POMasterId", out object? poMasterIdObj) || poMasterIdObj == null)
-        {
-            logger.LogWarning("Cannot upsert PO header without POMasterId");
-            return;
-        }
-
-        int poMasterId = Convert.ToInt32(poMasterIdObj);
-        var odooValues = ConvertKeysToSnakeCase(values);
-        string cacheKey = $"po_header:{poMasterId}";
-
-        if (!hashCache.HasChangedAndUpdate(cacheKey, odooValues))
-        {
-            return;
-        }
-
-        int? existingId = await FindPOHeaderByIdAsync(poMasterId, cancellationToken);
-        if (existingId.HasValue)
-        {
-            await odooRpcClient.ExecuteKwAsync(
-                appSettings.Odoo.POHeaderModel,
-                "write",
-                new object[] { new[] { existingId.Value }, odooValues },
-                null,
-                cancellationToken);
-            return;
-        }
-
-        await odooRpcClient.ExecuteKwAsync(
-            appSettings.Odoo.POHeaderModel,
-            "create",
-            new object[] { odooValues },
-            null,
-            cancellationToken);
-    }
-
-    private async Task UpsertPODetailInOdooAsync(
-        Dictionary<string, object> values,
-        CancellationToken cancellationToken)
-    {
-        if (!values.TryGetValue("PODetailId", out object? poDetailIdObj) || poDetailIdObj == null)
-        {
-            logger.LogWarning("Cannot upsert PO detail without PODetailId");
-            return;
-        }
-
-        int poDetailId = Convert.ToInt32(poDetailIdObj);
-        var odooValues = ConvertKeysToSnakeCase(values);
-        string cacheKey = $"po_detail:{poDetailId}";
-
-        if (!hashCache.HasChangedAndUpdate(cacheKey, odooValues))
-        {
-            return;
-        }
-
-        int? existingId = await FindPODetailByIdAsync(poDetailId, cancellationToken);
-        if (existingId.HasValue)
-        {
-            await odooRpcClient.ExecuteKwAsync(
-                appSettings.Odoo.PODetailModel,
-                "write",
-                new object[] { new[] { existingId.Value }, odooValues },
-                null,
-                cancellationToken);
-            return;
-        }
-
-        await odooRpcClient.ExecuteKwAsync(
-            appSettings.Odoo.PODetailModel,
-            "create",
-            new object[] { odooValues },
-            null,
-            cancellationToken);
-    }
-
-    private async Task<int?> FindPOHeaderByIdAsync(int poMasterId, CancellationToken cancellationToken)
-    {
-        object[] domain = { new object[] { "po_master_id", "=", poMasterId } };
-        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
-
-        var result = await odooRpcClient.ExecuteKwAsync(
-            appSettings.Odoo.POHeaderModel,
-            "search_read",
-            new object[] { domain },
-            kwargs,
-            cancellationToken);
-
-        if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-            return null;
-
-        return result[0].GetProperty("id").GetInt32();
-    }
-
-    private async Task<int?> FindPODetailByIdAsync(int poDetailId, CancellationToken cancellationToken)
-    {
-        object[] domain = { new object[] { "po_detail_id", "=", poDetailId } };
-        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
-
-        var result = await odooRpcClient.ExecuteKwAsync(
-            appSettings.Odoo.PODetailModel,
-            "search_read",
-            new object[] { domain },
-            kwargs,
-            cancellationToken);
-
-        if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
-            return null;
-
-        return result[0].GetProperty("id").GetInt32();
-    }
-
-    private static string? ConvertToString(object? value)
-    {
-        if (value == null || value == DBNull.Value)
-            return null;
-
-        if (value is bool boolValue)
-            return boolValue.ToString();
-
-        if (value is DateTime dateValue)
-            return dateValue.ToString("O");
-
-        return value.ToString();
-    }
-
-    private static Dictionary<string, object> BuildPOHeaderValues(
-        SqlDataReader reader,
-        HashSet<string> columns)
+    private static Dictionary<string, object> BuildPOHeaderValues(SqlDataReader reader, HashSet<string> columns)
     {
         var values = new Dictionary<string, object>();
 
-        // Required fields
-        AddValue(values, reader, columns, "POMasterId", true);
-        AddValue(values, reader, columns, "PODate", true);
-        AddValue(values, reader, columns, "RequiredDate", true);
-        AddValue(values, reader, columns, "POShipViaId", true);
-        AddValue(values, reader, columns, "IsClosed", true);
-        AddValue(values, reader, columns, "POStateId", true);
-        AddValue(values, reader, columns, "RecordVersion", false, 1);
-        AddValue(values, reader, columns, "LastChangeDate", true);
+        AddValue(values, reader, columns, "POMasterId", required: true);
+        AddValue(values, reader, columns, "PODate", required: true);
+        AddValue(values, reader, columns, "RequiredDate", required: true);
+        AddValue(values, reader, columns, "POShipViaId", required: true);
+        AddValue(values, reader, columns, "IsClosed", required: true);
+        AddValue(values, reader, columns, "POStateId", required: true);
+        AddValue(values, reader, columns, "RecordVersion", required: false, defaultValue: 1);
+        AddValue(values, reader, columns, "LastChangeDate", required: true);
 
-        // Optional fields
-        AddValue(values, reader, columns, "WriterId", false);
-        AddValue(values, reader, columns, "VendorId", false);
-        AddValue(values, reader, columns, "CommentInternal", false);
-        AddValue(values, reader, columns, "CommentReport", false);
-        AddValue(values, reader, columns, "TaxTotal", false);
-        AddValue(values, reader, columns, "PartsTotal", false);
-        AddValue(values, reader, columns, "PartsReceived", false);
-        AddValue(values, reader, columns, "BackOrder", false);
-        AddValue(values, reader, columns, "Phone", false);
-        AddValue(values, reader, columns, "PhoneExt", false);
-        AddValue(values, reader, columns, "Taxable", false);
-        AddValue(values, reader, columns, "TaxReceived", false);
-        AddValue(values, reader, columns, "ClosedDate", false);
-        AddValue(values, reader, columns, "ConfirmNum", false);
-        AddValue(values, reader, columns, "TrackingNumber", false);
+        AddValue(values, reader, columns, "WriterId", required: false);
+        AddValue(values, reader, columns, "VendorId", required: false);
+        AddValue(values, reader, columns, "CommentInternal", required: false);
+        AddValue(values, reader, columns, "CommentReport", required: false);
+        AddValue(values, reader, columns, "TaxTotal", required: false);
+        AddValue(values, reader, columns, "PartsTotal", required: false);
+        AddValue(values, reader, columns, "PartsReceived", required: false);
+        AddValue(values, reader, columns, "BackOrder", required: false);
+        AddValue(values, reader, columns, "Phone", required: false);
+        AddValue(values, reader, columns, "PhoneExt", required: false);
+        AddValue(values, reader, columns, "Taxable", required: false);
+        AddValue(values, reader, columns, "TaxReceived", required: false);
+        AddValue(values, reader, columns, "ClosedDate", required: false);
+        AddValue(values, reader, columns, "ConfirmNum", required: false);
+        AddValue(values, reader, columns, "TrackingNumber", required: false);
 
         return values;
     }
 
-    private static Dictionary<string, object> BuildPODetailValues(
-        SqlDataReader reader,
-        HashSet<string> columns)
+    private static Dictionary<string, object> BuildPODetailValues(SqlDataReader reader, HashSet<string> columns)
     {
         var values = new Dictionary<string, object>();
 
-        // Required fields
-        AddValue(values, reader, columns, "PODetailId", true);
-        AddValue(values, reader, columns, "POMasterId", true);
-        AddValue(values, reader, columns, "InventoryPart", true);
-        AddValue(values, reader, columns, "LocationId", false, "");
-        AddValue(values, reader, columns, "IsTire", false, false);
-        AddValue(values, reader, columns, "RecordVersion", false, 1);
-        AddValue(values, reader, columns, "LastChangeDate", true);
+        AddValue(values, reader, columns, "PODetailId", required: true);
+        AddValue(values, reader, columns, "POMasterId", required: true);
+        AddValue(values, reader, columns, "InventoryPart", required: true);
+        AddValue(values, reader, columns, "LocationId", required: false, defaultValue: "");
+        AddValue(values, reader, columns, "IsTire", required: false, defaultValue: false);
+        AddValue(values, reader, columns, "RecordVersion", required: false, defaultValue: 1);
+        AddValue(values, reader, columns, "LastChangeDate", required: true);
 
-        // Optional fields
-        AddValue(values, reader, columns, "Sequence", false);
-        AddValue(values, reader, columns, "PartId", false);
-        AddValue(values, reader, columns, "PartNumber", false);
-        AddValue(values, reader, columns, "Description", false);
-        AddValue(values, reader, columns, "Quantity", false);
-        AddValue(values, reader, columns, "QuantityReceived", false);
-        AddValue(values, reader, columns, "Cost", false);
-        AddValue(values, reader, columns, "CoreCost", false);
-        AddValue(values, reader, columns, "QuantityBackOrder", false);
-        AddValue(values, reader, columns, "QuantityCancelled", false);
-        AddValue(values, reader, columns, "Notes", false);
-        AddValue(values, reader, columns, "QuantityAvailConf", false);
-        AddValue(values, reader, columns, "MfgId", false);
-        AddValue(values, reader, columns, "AltPartNo", false);
-        AddValue(values, reader, columns, "AltMfgId", false);
-        AddValue(values, reader, columns, "RepairOrderId", false);
-        AddValue(values, reader, columns, "SaveDescription", false);
-        AddValue(values, reader, columns, "WDLineCode", false);
-        AddValue(values, reader, columns, "PartType", false);
-        AddValue(values, reader, columns, "LocationName", false);
-        AddValue(values, reader, columns, "ListPrice", false);
-        AddValue(values, reader, columns, "CatalogVendorId", false);
-        AddValue(values, reader, columns, "Metadata", false);
-        AddValue(values, reader, columns, "AddedFromSupplier", false);
-        AddValue(values, reader, columns, "PurchasedFromVendor", false);
-        AddValue(values, reader, columns, "PurchasedFromSupplier", false);
-        AddValue(values, reader, columns, "ShippingDescription", false);
-        AddValue(values, reader, columns, "ShippingCost", false);
+        AddValue(values, reader, columns, "Sequence", required: false);
+        AddValue(values, reader, columns, "PartId", required: false);
+        AddValue(values, reader, columns, "PartNumber", required: false);
+        AddValue(values, reader, columns, "Description", required: false);
+        AddValue(values, reader, columns, "Quantity", required: false);
+        AddValue(values, reader, columns, "QuantityReceived", required: false);
+        AddValue(values, reader, columns, "Cost", required: false);
+        AddValue(values, reader, columns, "CoreCost", required: false);
+        AddValue(values, reader, columns, "QuantityBackOrder", required: false);
+        AddValue(values, reader, columns, "QuantityCancelled", required: false);
+        AddValue(values, reader, columns, "Notes", required: false);
+        AddValue(values, reader, columns, "QuantityAvailConf", required: false);
+        AddValue(values, reader, columns, "MfgId", required: false);
+        AddValue(values, reader, columns, "AltPartNo", required: false);
+        AddValue(values, reader, columns, "AltMfgId", required: false);
+        AddValue(values, reader, columns, "RepairOrderId", required: false);
+        AddValue(values, reader, columns, "SaveDescription", required: false);
+        AddValue(values, reader, columns, "WDLineCode", required: false);
+        AddValue(values, reader, columns, "PartType", required: false);
+        AddValue(values, reader, columns, "LocationName", required: false);
+        AddValue(values, reader, columns, "ListPrice", required: false);
+        AddValue(values, reader, columns, "CatalogVendorId", required: false);
+        AddValue(values, reader, columns, "Metadata", required: false);
+        AddValue(values, reader, columns, "AddedFromSupplier", required: false);
+        AddValue(values, reader, columns, "PurchasedFromVendor", required: false);
+        AddValue(values, reader, columns, "PurchasedFromSupplier", required: false);
+        AddValue(values, reader, columns, "ShippingDescription", required: false);
+        AddValue(values, reader, columns, "ShippingCost", required: false);
 
         return values;
-    }
-
-    private static void AddValue(
-        Dictionary<string, object> values,
-        SqlDataReader reader,
-        HashSet<string> columns,
-        string columnName,
-        bool required,
-        object? defaultValue = null)
-    {
-        if (!columns.Contains(columnName))
-        {
-            if (required && defaultValue != null)
-            {
-                values[columnName] = defaultValue;
-            }
-            return;
-        }
-
-        object value = reader[columnName];
-        if (value == DBNull.Value)
-        {
-            if (defaultValue != null)
-            {
-                values[columnName] = defaultValue;
-            }
-            else if (!required)
-            {
-                // Skip null optional values - let Odoo handle defaults
-                return;
-            }
-            else
-            {
-                // Required field is null - this shouldn't happen but handle gracefully
-                throw new InvalidOperationException($"Required field {columnName} is null");
-            }
-        }
-        else
-        {
-            // Convert specific types for Odoo compatibility
-            if (value is DateTime dateTime)
-            {
-                // Odoo expects ISO 8601 format
-                values[columnName] = dateTime.ToString("yyyy-MM-dd HH:mm:ss");
-            }
-            else if (value is byte[] byteArray)
-            {
-                // Skip timestamp/rowversion fields - they're SQL Server internal
-                return;
-            }
-            else
-            {
-                values[columnName] = value;
-            }
-        }
-    }
-
-    private static string QuoteIdentifier(string identifier)
-    {
-        // Handle schema-qualified names (e.g., "SM.POMaster")
-        if (identifier.Contains('.'))
-        {
-            var parts = identifier.Split('.');
-            if (parts.Length != 2)
-            {
-                throw new InvalidOperationException($"Invalid SQL identifier: {identifier}");
-            }
-
-            // Validate each part separately
-            foreach (var part in parts)
-            {
-                if (!IdentifierRegex.IsMatch(part))
-                {
-                    throw new InvalidOperationException($"Invalid SQL identifier part: {part}");
-                }
-            }
-
-            // Quote each part: [Schema].[Table]
-            return $"[{parts[0]}].[{parts[1]}]";
-        }
-
-        // Single identifier (column name)
-        if (!IdentifierRegex.IsMatch(identifier))
-        {
-            throw new InvalidOperationException($"Invalid SQL identifier: {identifier}");
-        }
-
-        return $"[{identifier}]";
     }
 }

@@ -242,6 +242,43 @@ public partial class SettingsForm : Form
         LoadSettingsIntoUi();
     }
 
+    private async void testConnectionButton_Click(object sender, EventArgs e)
+    {
+        string cs = sqlConnectionStringTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(cs))
+        {
+            statusLabel.Text = "Enter a connection string first.";
+            statusLabel.ForeColor = Color.DarkOrange;
+            return;
+        }
+
+        testConnectionButton.Enabled = false;
+        statusLabel.Text = "Testing...";
+        statusLabel.ForeColor = Color.DarkSlateGray;
+
+        try
+        {
+            var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(cs)
+            {
+                TrustServerCertificate = true,
+                ConnectTimeout = 5
+            };
+            await using var conn = new Microsoft.Data.SqlClient.SqlConnection(builder.ConnectionString);
+            await conn.OpenAsync();
+            statusLabel.Text = $"Connected to {conn.Database} on {conn.DataSource}";
+            statusLabel.ForeColor = Color.DarkGreen;
+        }
+        catch (Exception ex)
+        {
+            statusLabel.Text = "Connection failed: " + ex.Message;
+            statusLabel.ForeColor = Color.DarkRed;
+        }
+        finally
+        {
+            testConnectionButton.Enabled = true;
+        }
+    }
+
     private static bool IsInDesigner()
     {
         return LicenseManager.UsageMode == LicenseUsageMode.Designtime;

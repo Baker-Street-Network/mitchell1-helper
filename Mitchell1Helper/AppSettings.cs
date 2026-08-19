@@ -17,7 +17,7 @@ public class AppSettings
 
     public class SqlConfig
     {
-        public string ConnectionString { get; set; } = "";
+        public string ConnectionString { get; set; } = "Server=localhost;Database=ShopMgt;Integrated Security=True;";
     }
 
     public class OdooConfig
