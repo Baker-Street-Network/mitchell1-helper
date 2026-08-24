@@ -34,6 +34,7 @@ public class AppSettings
         public string RepairOrderLineItemModel { get; set; } = "mitchell.repair.line";
         public string POHeaderModel { get; set; } = "mitchell.po";
         public string PODetailModel { get; set; } = "mitchell.po.detail";
+        public string AccountModel { get; set; } = "mitchell.account";
         public string ExternalRefPrefix { get; set; } = "MITCHELL1-";
     }
 

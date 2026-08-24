@@ -7,6 +7,7 @@ namespace Mitchell1Helper;
 public class Mitchell1BackgroundService(
     ILogger<Mitchell1BackgroundService> logger,
     AppSettings appSettings,
+    MitchellAccountSyncService accountSyncService,
     MitchellCustomerSyncService customerSyncService,
     MitchellVendorSyncService vendorSyncService,
     MitchellPartSyncService partSyncService,
@@ -23,6 +24,7 @@ public class Mitchell1BackgroundService(
         {
             try
             {
+                await accountSyncService.PollAndSyncAsync(stoppingToken);
                 await customerSyncService.PollAndSyncAsync(stoppingToken);
                 await vendorSyncService.PollAndSyncAsync(stoppingToken);
                 await partSyncService.PollAndSyncAsync(stoppingToken);

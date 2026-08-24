@@ -187,7 +187,17 @@ public partial class SettingsForm : Form
         string lastPOMasterId = _syncState.LastProcessedPOMasterId?.ToString() ?? "none";
         string poErr = string.IsNullOrWhiteSpace(_syncState.LastPOError) ? "none" : _syncState.LastPOError;
 
+        string lastGLAccountPoll = _syncState.LastSuccessfulGLAccountPollUtc?.ToLocalTime().ToString("g") ?? "never";
+        string glAccountCount = _syncState.LastSyncedGLAccountIds?.Length.ToString() ?? "0";
+        string glAccountErr = string.IsNullOrWhiteSpace(_syncState.LastGLAccountError) ? "none" : _syncState.LastGLAccountError;
+
         textBox1.Text =
+            $"=== GL ACCOUNTS ===" + Environment.NewLine +
+            $"Last poll: {lastGLAccountPoll}" + Environment.NewLine +
+            $"Last processed count: {_syncState.LastGLAccountProcessedCount}" + Environment.NewLine +
+            $"Accounts currently synced: {glAccountCount}" + Environment.NewLine +
+            $"Last error: {glAccountErr}" + Environment.NewLine +
+            Environment.NewLine +
             $"=== CUSTOMERS ===" + Environment.NewLine +
             $"Last poll: {lastPoll}" + Environment.NewLine +
             $"Last change processed (UTC): {lastChange}" + Environment.NewLine +

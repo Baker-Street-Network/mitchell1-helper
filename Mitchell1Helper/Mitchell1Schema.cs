@@ -148,6 +148,33 @@ public static class Mitchell1Schema
     /// </summary>
     public const string PODetailIdColumn = "PODetailId";
 
+    // GL Account Schema Constants
+
+    /// <summary>
+    /// GLAccounts table name (without schema)
+    /// </summary>
+    public const string GLAccountsTableName = "GLAccounts";
+
+    /// <summary>
+    /// GLAccounts table full name (schema.table)
+    /// </summary>
+    public const string GLAccountsTable = $"{SchemaName}.{GLAccountsTableName}";
+
+    /// <summary>
+    /// GL Account ID column name (primary key)
+    /// </summary>
+    public const string GLAccountIdColumn = "GLAccountId";
+
+    /// <summary>
+    /// GLEntryTypes table name (without schema)
+    /// </summary>
+    public const string GLEntryTypesTableName = "GLEntryTypes";
+
+    /// <summary>
+    /// GLEntryTypes table full name (schema.table)
+    /// </summary>
+    public const string GLEntryTypesTable = $"{SchemaName}.{GLEntryTypesTableName}";
+
     /// <summary>
     /// Minimum valid SQL Server datetime value (for datetime/datetime2 compatibility)
     /// </summary>

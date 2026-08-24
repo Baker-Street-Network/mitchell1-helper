@@ -44,6 +44,12 @@ public class SyncState
     public string? LastRepairOrderLineItemError { get; private set; }
     public int LastRepairOrderLineItemBatchProcessedCount { get; private set; }
 
+    // GL Account sync state
+    public DateTime? LastSuccessfulGLAccountPollUtc { get; private set; }
+    public string? LastGLAccountError { get; private set; }
+    public int LastGLAccountProcessedCount { get; private set; }
+    public long[]? LastSyncedGLAccountIds { get; private set; }
+
     // PO sync state
     public DateTime? LastSuccessfulPOPollUtc { get; private set; }
     public DateTime? LastProcessedPOChangeDateUtc { get; private set; }
@@ -81,6 +87,27 @@ public class SyncState
             LastProcessedVendorId = lastVendorId;
             LastVendorBatchProcessedCount = batchCount;
             LastVendorError = null;
+            Save();
+        }
+    }
+
+    public void MarkGLAccountSuccess(int processedCount, long[] syncedGLAccountIds)
+    {
+        lock (_lock)
+        {
+            LastSuccessfulGLAccountPollUtc = DateTime.UtcNow;
+            LastGLAccountProcessedCount = processedCount;
+            LastSyncedGLAccountIds = syncedGLAccountIds;
+            LastGLAccountError = null;
+            Save();
+        }
+    }
+
+    public void MarkGLAccountError(string error)
+    {
+        lock (_lock)
+        {
+            LastGLAccountError = error;
             Save();
         }
     }
@@ -239,6 +266,11 @@ public class SyncState
                 LastRepairOrderError = state.LastRepairOrderError;
                 LastRepairOrderBatchProcessedCount = state.LastRepairOrderBatchProcessedCount;
 
+                LastSuccessfulGLAccountPollUtc = state.LastSuccessfulGLAccountPollUtc;
+                LastGLAccountError = state.LastGLAccountError;
+                LastGLAccountProcessedCount = state.LastGLAccountProcessedCount;
+                LastSyncedGLAccountIds = state.LastSyncedGLAccountIds;
+
                 LastSuccessfulPOPollUtc = state.LastSuccessfulPOPollUtc;
                 LastProcessedPOChangeDateUtc = state.LastProcessedPOChangeDateUtc;
                 LastProcessedPOMasterId = state.LastProcessedPOMasterId;
@@ -284,6 +316,11 @@ public class SyncState
                 LastProcessedRepairOrderId = LastProcessedRepairOrderId,
                 LastRepairOrderError = LastRepairOrderError,
                 LastRepairOrderBatchProcessedCount = LastRepairOrderBatchProcessedCount,
+
+                LastSuccessfulGLAccountPollUtc = LastSuccessfulGLAccountPollUtc,
+                LastGLAccountError = LastGLAccountError,
+                LastGLAccountProcessedCount = LastGLAccountProcessedCount,
+                LastSyncedGLAccountIds = LastSyncedGLAccountIds,
 
                 LastSuccessfulPOPollUtc = LastSuccessfulPOPollUtc,
                 LastProcessedPOChangeDateUtc = LastProcessedPOChangeDateUtc,
@@ -338,6 +375,11 @@ public class SyncState
         public long? LastProcessedRepairOrderId { get; set; }
         public string? LastRepairOrderError { get; set; }
         public int LastRepairOrderBatchProcessedCount { get; set; }
+
+        public DateTime? LastSuccessfulGLAccountPollUtc { get; set; }
+        public string? LastGLAccountError { get; set; }
+        public int LastGLAccountProcessedCount { get; set; }
+        public long[]? LastSyncedGLAccountIds { get; set; }
 
         public DateTime? LastSuccessfulPOPollUtc { get; set; }
         public DateTime? LastProcessedPOChangeDateUtc { get; set; }
