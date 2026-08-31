@@ -26,7 +26,7 @@ public class MitchellCustomerSyncService(
                mob.[PhoneNum] AS Mobile
         FROM [SM].[Customers] c
         OUTER APPLY (
-            SELECT TOP 1 addr.[Address], addr.[City], addr.[State], addr.[ZipCode]
+            SELECT TOP 1 addr.[Address], addr.[City], addr.[State], addr.[ZipCode], addr.[Company]
             FROM [SM].[CustomerAddresses] ca
             JOIN [SM].[Addresses] addr ON addr.[AddressId] = ca.[AddressId]
             WHERE ca.[CustID] = c.[CustId]
@@ -138,6 +138,7 @@ public class MitchellCustomerSyncService(
     {
         string? firstName = GetString(reader, columns, "FirstName");
         string? lastName = GetString(reader, columns, "LastName");
+        string? company = GetString(reader, columns, "Company");
 
         var values = new Dictionary<string, object>
         {
@@ -148,6 +149,13 @@ public class MitchellCustomerSyncService(
 
         if (!string.IsNullOrWhiteSpace(firstName)) values["first_name"] = firstName;
         if (!string.IsNullOrWhiteSpace(lastName)) values["last_name"] = lastName;
+
+        if (string.IsNullOrWhiteSpace(firstName) && string.IsNullOrWhiteSpace(lastName)
+            && !string.IsNullOrWhiteSpace(company))
+        {
+            values["name"] = company;
+            values["is_company"] = true;
+        }
 
         if (TryGetString(reader, columns, "EmailAddress", out string? email)) values["email"] = email!;
         if (TryGetString(reader, columns, "Street", out string? street)) values["street"] = street!;
