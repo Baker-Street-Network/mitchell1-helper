@@ -8,8 +8,9 @@ public class MitchellAccountSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellAccountSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private const string GLAccountQuery = """
         SELECT g.[GLAccountId], g.[AccountClassId], g.[GLCode], g.[Description], g.[EntryTypeId],

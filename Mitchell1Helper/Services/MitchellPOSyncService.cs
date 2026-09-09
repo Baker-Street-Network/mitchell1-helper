@@ -9,8 +9,9 @@ public class MitchellPOSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellPOSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private DateTime _lastChangeDateUtc = syncState.LastProcessedPOChangeDateUtc ?? DateTime.MinValue;
     private long _lastPOMasterId = syncState.LastProcessedPOMasterId ?? 0;
@@ -30,8 +31,11 @@ public class MitchellPOSyncService(
 
         int processedHeaders = 0;
         int processedDetails = 0;
+        int failedHeaders = 0;
         DateTime? newestChangeDate = null;
         long? newestPOMasterId = null;
+        // A failed row holds the cursor so it is retried on the next poll.
+        bool cursorBlocked = false;
 
         try
         {
@@ -66,13 +70,18 @@ public class MitchellPOSyncService(
                         AppSettings.Odoo.POHeaderModel, "po_master_id", poMasterId,
                         values, $"po_header:{poMasterId}", cancellationToken);
 
+                    MarkRowSucceeded("PO Header", poMasterId);
                     processedHeaders++;
-                    newestChangeDate = changeDate;
-                    newestPOMasterId = poMasterId;
+                    if (!cursorBlocked)
+                    {
+                        newestChangeDate = changeDate;
+                        newestPOMasterId = poMasterId;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to process PO Header {Id}. Skipping.", poMasterId);
+                    failedHeaders++;
+                    if (ShouldHoldCursorAfterFailure("PO Header", poMasterId, ex, logger)) cursorBlocked = true;
                 }
             }
 
@@ -89,8 +98,19 @@ public class MitchellPOSyncService(
                 SyncState.MarkPOSuccess(newestChangeDate, newestPOMasterId, processedHeaders, processedDetails);
             }
 
-            logger.LogInformation("PO poll completed. Headers: {Headers}, Details: {Details}",
-                processedHeaders, processedDetails);
+            string? poQuarantined = QuarantineSummary();
+            if (failedHeaders > 0 || poQuarantined != null)
+            {
+                string msg = failedHeaders > 0
+                    ? $"{failedHeaders} purchase order(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastPOMasterId}. See log for details."
+                    : "";
+                if (poQuarantined != null) msg = string.IsNullOrEmpty(msg) ? poQuarantined : msg + " " + poQuarantined;
+                SyncState.MarkPOError(msg);
+                logger.LogWarning(msg);
+            }
+
+            logger.LogInformation("PO poll completed. Headers: {Headers} ({Failed} failed), Details: {Details}",
+                processedHeaders, failedHeaders, processedDetails);
         }
         catch (Exception ex)
         {
@@ -105,6 +125,8 @@ public class MitchellPOSyncService(
         int processed = 0;
         DateTime? newestChangeDate = null;
         long? newestDetailId = null;
+        // A failed row holds the cursor so it is retried on the next poll.
+        bool cursorBlocked = false;
 
         string detailTable = QuoteIdentifier(Mitchell1Schema.PODetailTable);
         string detailIdCol = QuoteIdentifier(Mitchell1Schema.PODetailIdColumn);
@@ -140,13 +162,17 @@ public class MitchellPOSyncService(
                     AppSettings.Odoo.PODetailModel, "po_detail_id", poDetailId,
                     values, $"po_detail:{poDetailId}", cancellationToken);
 
+                MarkRowSucceeded("PO Detail", poDetailId);
                 processed++;
-                newestChangeDate = changeDate;
-                newestDetailId = poDetailId;
+                if (!cursorBlocked)
+                {
+                    newestChangeDate = changeDate;
+                    newestDetailId = poDetailId;
+                }
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to process PO Detail {Id}. Skipping.", poDetailId);
+                if (ShouldHoldCursorAfterFailure("PO Detail", poDetailId, ex, logger)) cursorBlocked = true;
             }
         }
 

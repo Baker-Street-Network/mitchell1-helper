@@ -9,8 +9,9 @@ public class MitchellCustomerSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellCustomerSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private DateTime _lastChangeDateUtc = syncState.LastProcessedChangeDateUtc ?? DateTime.MinValue;
     private long _lastCustomerId = syncState.LastProcessedCustomerId ?? 0;
@@ -22,6 +23,7 @@ public class MitchellCustomerSyncService(
                a.[City],
                a.[State],
                a.[ZipCode],
+               a.[Company],
                ph.[PhoneNum]  AS Phone,
                mob.[PhoneNum] AS Mobile
         FROM [SM].[Customers] c
@@ -69,8 +71,12 @@ public class MitchellCustomerSyncService(
             _lastChangeDateUtc, _lastCustomerId);
 
         int processed = 0;
+        int failed = 0;
         DateTime? newestChangeDate = null;
         long? newestId = null;
+        // Once a row fails the cursor must stop advancing, otherwise a later success in the
+        // same batch moves it past the failure and that record is never queried again.
+        bool cursorBlocked = false;
 
         try
         {
@@ -107,13 +113,18 @@ public class MitchellCustomerSyncService(
                         await UpsertInOdooAsync(AppSettings.Odoo.CustomerModel, "ref", domainValue, values, cacheKey, cancellationToken);
                     }
 
+                    MarkRowSucceeded("Customer", id);
                     processed++;
-                    newestChangeDate = changeDate;
-                    newestId = id;
+                    if (!cursorBlocked)
+                    {
+                        newestChangeDate = changeDate;
+                        newestId = id;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to process Customer {Id}. Skipping.", id);
+                    failed++;
+                    if (ShouldHoldCursorAfterFailure("Customer", id, ex, logger)) cursorBlocked = true;
                 }
             }
 
@@ -124,7 +135,18 @@ public class MitchellCustomerSyncService(
                 SyncState.MarkSuccess(newestChangeDate, newestId, processed);
             }
 
-            logger.LogInformation("Customer poll completed. Processed {Count} change(s)", processed);
+            string? quarantined = QuarantineSummary();
+            if (failed > 0 || quarantined != null)
+            {
+                string msg = failed > 0
+                    ? $"{failed} customer record(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastCustomerId}. See log for details."
+                    : "";
+                if (quarantined != null) msg = string.IsNullOrEmpty(msg) ? quarantined : msg + " " + quarantined;
+                SyncState.MarkError(msg);
+                logger.LogWarning(msg);
+            }
+
+            logger.LogInformation("Customer poll completed. Processed {Count} change(s), {Failed} failure(s)", processed, failed);
         }
         catch (Exception ex)
         {

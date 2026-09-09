@@ -9,8 +9,9 @@ public class MitchellRepairOrderSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellRepairOrderSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private DateTime _lastChangeDateUtc = syncState.LastProcessedRepairOrderChangeDateUtc ?? DateTime.MinValue;
     private long _lastRepairOrderId = syncState.LastProcessedRepairOrderId ?? 0;
@@ -31,6 +32,7 @@ public class MitchellRepairOrderSyncService(
         while (true)
         {
             int processed = 0;
+            int failed = 0;
             try
             {
                 logger.LogInformation("Starting RepairOrder poll. Last: ChangeDate={Date:O}, Id={Id}",
@@ -54,6 +56,8 @@ public class MitchellRepairOrderSyncService(
 
                 DateTime? newestChangeDate = null;
                 long? newestRepairOrderId = null;
+                // A failed row holds the cursor so it is retried on the next poll.
+                bool cursorBlocked = false;
 
                 while (await reader.ReadAsync(cancellationToken))
                 {
@@ -68,13 +72,18 @@ public class MitchellRepairOrderSyncService(
                             AppSettings.Odoo.RepairOrderModel, "repair_order_id", repairOrderId,
                             values, $"repair_order:{repairOrderId}", cancellationToken);
 
+                        MarkRowSucceeded("RepairOrder", repairOrderId);
                         processed++;
-                        newestChangeDate = changeDate;
-                        newestRepairOrderId = repairOrderId;
+                        if (!cursorBlocked)
+                        {
+                            newestChangeDate = changeDate;
+                            newestRepairOrderId = repairOrderId;
+                        }
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Failed to process RepairOrder {Id}. Skipping.", repairOrderId);
+                        failed++;
+                        if (ShouldHoldCursorAfterFailure("RepairOrder", repairOrderId, ex, logger)) cursorBlocked = true;
                     }
                 }
 
@@ -92,9 +101,22 @@ public class MitchellRepairOrderSyncService(
                 throw;
             }
 
+            string? roQuarantined = QuarantineSummary();
+            if (failed > 0 || roQuarantined != null)
+            {
+                string msg = failed > 0
+                    ? $"{failed} repair order(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastRepairOrderId}. See log for details."
+                    : "";
+                if (roQuarantined != null) msg = string.IsNullOrEmpty(msg) ? roQuarantined : msg + " " + roQuarantined;
+                SyncState.MarkRepairOrderError(msg);
+            }
+
             totalProcessed += processed;
-            logger.LogInformation("RepairOrder batch: {Batch} processed, {Total} total", processed, totalProcessed);
-            if (processed < AppSettings.Sync.BatchSize) break;
+            logger.LogInformation("RepairOrder batch: {Batch} processed, {Failed} failed, {Total} total",
+                processed, failed, totalProcessed);
+            // Stop when the batch was not full AND nothing was quarantined this round; a
+            // quarantined row means the cursor just moved past it, so there may be more to do.
+            if (processed + failed < AppSettings.Sync.BatchSize) break;
         }
 
         await PollAndSyncLineItemsAsync(cancellationToken);
@@ -107,8 +129,11 @@ public class MitchellRepairOrderSyncService(
         while (true)
         {
             int processed = 0;
+            int failed = 0;
             DateTime? newestChangeDate = null;
             long? newestLineItemId = null;
+            // A failed row holds the cursor so it is retried on the next poll.
+            bool cursorBlocked = false;
 
             try
             {
@@ -162,13 +187,18 @@ public class MitchellRepairOrderSyncService(
                             AppSettings.Odoo.RepairOrderLineItemModel, "line_item_id", lineItemId,
                             values, $"line_item:{lineItemId}", cancellationToken);
 
+                        MarkRowSucceeded("LineItem", lineItemId);
                         processed++;
-                        newestChangeDate = changeDate;
-                        newestLineItemId = lineItemId;
+                        if (!cursorBlocked)
+                        {
+                            newestChangeDate = changeDate;
+                            newestLineItemId = lineItemId;
+                        }
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Failed to process LineItem {Id}. Skipping.", lineItemId);
+                        failed++;
+                        if (ShouldHoldCursorAfterFailure("LineItem", lineItemId, ex, logger)) cursorBlocked = true;
                     }
                 }
             }
@@ -181,9 +211,14 @@ public class MitchellRepairOrderSyncService(
             if (newestChangeDate.HasValue && newestLineItemId.HasValue)
                 SyncState.MarkRepairOrderLineItemSuccess(newestChangeDate, newestLineItemId, processed);
 
+            if (failed > 0)
+                SyncState.MarkRepairOrderLineItemError(
+                    $"{failed} line item(s) failed to sync. See log for details.");
+
             totalProcessed += processed;
-            logger.LogInformation("LineItem batch: {Batch} processed, {Total} total", processed, totalProcessed);
-            if (processed < AppSettings.Sync.BatchSize) break;
+            logger.LogInformation("LineItem batch: {Batch} processed, {Failed} failed, {Total} total",
+                processed, failed, totalProcessed);
+            if (processed + failed < AppSettings.Sync.BatchSize) break;
         }
     }
 

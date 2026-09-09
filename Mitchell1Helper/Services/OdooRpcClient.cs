@@ -98,18 +98,81 @@ public class OdooRpcClient(
         logger.LogDebug("Odoo JSON-2 POST {Endpoint}", endpoint);
 
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        //response.EnsureSuccessStatusCode();
+        string payload = await response.Content.ReadAsStringAsync(cancellationToken);
 
-        await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        JsonDocument document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-        if (document.RootElement.ValueKind == JsonValueKind.Object &&
-            document.RootElement.TryGetProperty("error", out JsonElement errorElement))
+        if (!response.IsSuccessStatusCode)
         {
-            string error = errorElement.ToString();
-            throw new InvalidOperationException($"Odoo JSON-2 error: {error}");
+            throw new InvalidOperationException(
+                $"Odoo {model}.{method} failed: HTTP {(int)response.StatusCode} {response.ReasonPhrase}. {Describe(payload)}");
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(payload);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Odoo {model}.{method} returned a non-JSON response (HTTP {(int)response.StatusCode}). {Describe(payload)}", ex);
+        }
+
+        if (TryGetOdooError(document.RootElement, out string? error))
+        {
+            document.Dispose();
+            throw new InvalidOperationException($"Odoo {model}.{method} error: {error}");
         }
 
         return document;
+    }
+
+    /// <summary>
+    /// Detects an error payload returned with a 2xx status. Odoo reports these either as a
+    /// JSON-RPC style <c>{"error": ...}</c> object or as a serialised werkzeug exception
+    /// (<c>{"name": "werkzeug.exceptions.X", "message": ...}</c>), sometimes wrapped in an array.
+    /// Without this check an error body is handed back as if it were a successful result.
+    /// </summary>
+    private static bool TryGetOdooError(JsonElement root, out string? error)
+    {
+        error = null;
+
+        JsonElement candidate = root;
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            if (root.GetArrayLength() != 1) return false;
+            candidate = root[0];
+        }
+
+        if (candidate.ValueKind != JsonValueKind.Object) return false;
+
+        if (candidate.TryGetProperty("error", out JsonElement errorElement))
+        {
+            error = errorElement.ToString();
+            return true;
+        }
+
+        // A real record always carries an "id"; an exception payload carries a dotted
+        // exception name plus a message. Requiring all three keeps genuine records
+        // (which may legitimately have a "name") from being misread as errors.
+        if (!candidate.TryGetProperty("id", out _)
+            && candidate.TryGetProperty("name", out JsonElement nameElement)
+            && candidate.TryGetProperty("message", out JsonElement messageElement)
+            && nameElement.ValueKind == JsonValueKind.String
+            && nameElement.GetString() is { } name
+            && name.Contains('.'))
+        {
+            error = $"{name}: {messageElement}";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string Describe(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return "Response body was empty.";
+        string trimmed = payload.Trim();
+        const int max = 500;
+        return "Response body: " + (trimmed.Length <= max ? trimmed : trimmed[..max] + "...");
     }
 }

@@ -25,6 +25,7 @@ internal static class Program
 				services.AddSingleton(settings);
 				services.AddSingleton<SyncState>();
 				services.AddSingleton<RecordHashCache>();
+				services.AddSingleton<SyncFailureTracker>();
 				services.AddSingleton<MitchellCustomerSyncService>();
 				services.AddSingleton<MitchellVendorSyncService>();
 				services.AddSingleton<MitchellPartSyncService>();
@@ -45,6 +46,8 @@ internal static class Program
 				{
 					builder.AddConsole();
 					builder.AddDebug();
+					// WinForms process has no console, so failures are only visible on disk.
+					builder.AddProvider(new FileLoggerProvider());
 				});
 			})
 			.Build();

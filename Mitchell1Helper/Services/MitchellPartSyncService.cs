@@ -8,8 +8,9 @@ public class MitchellPartSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellPartSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private DateTime _lastChangeDateUtc = syncState.LastProcessedPartChangeDateUtc ?? DateTime.MinValue;
     private long _lastPartId = syncState.LastProcessedPartId ?? 0;

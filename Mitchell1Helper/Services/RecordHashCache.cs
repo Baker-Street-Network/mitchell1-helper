@@ -26,10 +26,29 @@ public class RecordHashCache
     }
 
     /// <summary>
-    /// Returns true (and updates the cache) if the values have changed since the last sync.
+    /// Returns true if the values differ from the last successfully synced version.
     /// Returns false if the hash matches — caller should skip the write.
+    /// <para>
+    /// This only inspects the cache. Call <see cref="Commit"/> once Odoo has accepted
+    /// the write; committing earlier would mark a record as synced even when the write
+    /// failed, and it would never be retried.
+    /// </para>
     /// </summary>
-    public bool HasChangedAndUpdate(string recordKey, Dictionary<string, object> values)
+    public bool HasChanged(string recordKey, Dictionary<string, object> values)
+    {
+        string hash = ComputeHash(values);
+
+        lock (_lock)
+        {
+            return !_hashes.TryGetValue(recordKey, out string? existing) || existing != hash;
+        }
+    }
+
+    /// <summary>
+    /// Records the values as successfully synced. Only call this after Odoo has
+    /// accepted the corresponding write.
+    /// </summary>
+    public void Commit(string recordKey, Dictionary<string, object> values)
     {
         string hash = ComputeHash(values);
 
@@ -37,12 +56,11 @@ public class RecordHashCache
         {
             if (_hashes.TryGetValue(recordKey, out string? existing) && existing == hash)
             {
-                return false;
+                return;
             }
 
             _hashes[recordKey] = hash;
             Save();
-            return true;
         }
     }
 

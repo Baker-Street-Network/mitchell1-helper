@@ -42,6 +42,13 @@ public class AppSettings
     {
         public int PollIntervalSeconds { get; set; } = 30;
         public int BatchSize { get; set; } = 200;
+
+        /// <summary>
+        /// How many consecutive times a single record may fail before it is quarantined
+        /// and the cursor is allowed past it. Prevents one unsyncable row from blocking
+        /// every record behind it.
+        /// </summary>
+        public int MaxSyncAttempts { get; set; } = 3;
     }
 
     public class UpdateConfig

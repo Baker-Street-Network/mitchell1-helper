@@ -9,8 +9,9 @@ public class MitchellVendorSyncService(
     OdooRpcClient odooRpcClient,
     SyncState syncState,
     RecordHashCache hashCache,
+    SyncFailureTracker failureTracker,
     ILogger<MitchellVendorSyncService> logger)
-    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache)
+    : SyncServiceBase(appSettings, odooRpcClient, syncState, hashCache, failureTracker)
 {
     private DateTime _lastChangeDateUtc = syncState.LastProcessedVendorChangeDateUtc ?? DateTime.MinValue;
     private long _lastVendorId = syncState.LastProcessedVendorId ?? 0;
@@ -59,8 +60,11 @@ public class MitchellVendorSyncService(
             _lastChangeDateUtc, _lastVendorId);
 
         int processed = 0;
+        int failed = 0;
         DateTime? newestChangeDate = null;
         long? newestId = null;
+        // See MitchellCustomerSyncService: a failed row must hold the cursor.
+        bool cursorBlocked = false;
 
         try
         {
@@ -97,13 +101,18 @@ public class MitchellVendorSyncService(
                         await UpsertInOdooAsync(AppSettings.Odoo.VendorModel, "ref", domainValue, values, cacheKey, cancellationToken);
                     }
 
+                    MarkRowSucceeded("Vendor", id);
                     processed++;
-                    newestChangeDate = changeDate;
-                    newestId = id;
+                    if (!cursorBlocked)
+                    {
+                        newestChangeDate = changeDate;
+                        newestId = id;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to process Vendor {Id}. Skipping.", id);
+                    failed++;
+                    if (ShouldHoldCursorAfterFailure("Vendor", id, ex, logger)) cursorBlocked = true;
                 }
             }
 
@@ -114,7 +123,14 @@ public class MitchellVendorSyncService(
                 SyncState.MarkVendorSuccess(newestChangeDate, newestId, processed);
             }
 
-            logger.LogInformation("Vendor poll completed. Processed {Count} change(s)", processed);
+            if (failed > 0)
+            {
+                string msg = $"{failed} vendor record(s) failed to sync; cursor held at ChangeDate={_lastChangeDateUtc:O}, Id={_lastVendorId}. See log for details.";
+                SyncState.MarkVendorError(msg);
+                logger.LogWarning(msg);
+            }
+
+            logger.LogInformation("Vendor poll completed. Processed {Count} change(s), {Failed} failure(s)", processed, failed);
         }
         catch (Exception ex)
         {

@@ -11,12 +11,44 @@ public abstract class SyncServiceBase(
     AppSettings appSettings,
     OdooRpcClient odooRpcClient,
     SyncState syncState,
-    RecordHashCache hashCache)
+    RecordHashCache hashCache,
+    SyncFailureTracker failureTracker)
 {
     protected AppSettings AppSettings => appSettings;
     protected OdooRpcClient OdooRpcClient => odooRpcClient;
     protected SyncState SyncState => syncState;
     protected RecordHashCache HashCache => hashCache;
+    protected SyncFailureTracker Failures => failureTracker;
+
+    protected int MaxSyncAttempts => Math.Max(1, AppSettings.Sync.MaxSyncAttempts);
+
+    /// <summary>
+    /// Handles a per-row failure. Returns true if the cursor should be held so the record
+    /// is retried on the next poll, or false once the record has exhausted its attempts and
+    /// been quarantined — at which point the cursor is allowed past it so the rest of the
+    /// queue keeps flowing.
+    /// </summary>
+    protected bool ShouldHoldCursorAfterFailure(string entityName, long id, Exception ex, ILogger logger)
+    {
+        int attempts = Failures.RecordFailure(entityName, id, ex.Message);
+
+        if (attempts < MaxSyncAttempts)
+        {
+            logger.LogError(ex, "Failed to process {Entity} {Id} (attempt {Attempt} of {Max}). Holding cursor; will retry next poll.",
+                entityName, id, attempts, MaxSyncAttempts);
+            return true;
+        }
+
+        logger.LogError(ex, "Failed to process {Entity} {Id} {Attempt} times. QUARANTINED - advancing the cursor past it so the queue is not blocked. Fix the record and it will sync the next time it changes.",
+            entityName, id, attempts);
+        return false;
+    }
+
+    /// <summary>Clears a record's failure history after a successful sync.</summary>
+    protected void MarkRowSucceeded(string entityName, long id) => Failures.Clear(entityName, id);
+
+    /// <summary>Appends any quarantine summary to a poll's error message.</summary>
+    protected string? QuarantineSummary() => Failures.Describe(MaxSyncAttempts);
 
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
@@ -247,22 +279,25 @@ public abstract class SyncServiceBase(
         string model, string domainField, object domainValue,
         Dictionary<string, object> values, string cacheKey, CancellationToken ct)
     {
-        if (!HashCache.HasChangedAndUpdate(cacheKey, values)) return;
+        if (!HashCache.HasChanged(cacheKey, values)) return;
         int? existingId = await FindInOdooAsync(model, domainField, domainValue, ct);
         if (existingId.HasValue)
             await OdooRpcClient.ExecuteKwAsync(model, "write", [new[] { existingId.Value }, values], null, ct);
         else
             await OdooRpcClient.ExecuteKwAsync(model, "create", [values], null, ct);
+        // Only after Odoo accepted the write — a failed call must stay dirty so it retries.
+        HashCache.Commit(cacheKey, values);
     }
 
     protected async Task ArchiveInOdooAsync(
         string model, string domainField, object domainValue, string cacheKey, CancellationToken ct)
     {
         var archiveValues = new Dictionary<string, object> { ["active"] = false };
-        if (!HashCache.HasChangedAndUpdate(cacheKey, archiveValues)) return;
+        if (!HashCache.HasChanged(cacheKey, archiveValues)) return;
         int? existingId = await FindInOdooAsync(model, domainField, domainValue, ct);
         if (!existingId.HasValue) return;
         await OdooRpcClient.ExecuteKwAsync(model, "write", new object[] { new[] { existingId.Value }, archiveValues }, null, ct);
+        HashCache.Commit(cacheKey, archiveValues);
     }
 
     // ── Flat entity poll template ────────────────────────────────────────────
@@ -289,6 +324,9 @@ public abstract class SyncServiceBase(
         int processed = 0;
         DateTime? newestChangeDate = null;
         long? newestId = null;
+        // A failed row holds the cursor; otherwise a later success in the same batch
+        // moves past it and the failed record is never queried again.
+        bool cursorBlocked = false;
 
         string cs = EnsureTrustServerCertificate(AppSettings.Sql.ConnectionString);
         await using var conn = new SqlConnection(cs);
@@ -330,13 +368,17 @@ public abstract class SyncServiceBase(
                     await UpsertInOdooAsync(odooModel, odooDomainField, domainValue, values, cacheKey, cancellationToken);
                 }
 
+                MarkRowSucceeded(entityName, id);
                 processed++;
-                newestChangeDate = changeDate;
-                newestId = id;
+                if (!cursorBlocked)
+                {
+                    newestChangeDate = changeDate;
+                    newestId = id;
+                }
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to process {Entity} {Id}. Skipping.", entityName, id);
+                if (ShouldHoldCursorAfterFailure(entityName, id, ex, logger)) cursorBlocked = true;
             }
         }
 
