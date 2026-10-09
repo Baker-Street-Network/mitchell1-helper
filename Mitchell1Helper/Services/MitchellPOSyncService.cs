@@ -104,6 +104,12 @@ public class MitchellPOSyncService(
                 SyncState.MarkPOError(msg);
                 logger.LogWarning(msg);
             }
+            else
+            {
+                // A clean poll clears a stale error. Without this, an entity that has had
+                // no changes keeps reporting a problem that was resolved days ago.
+                SyncState.MarkPOError(null);
+            }
 
             logger.LogInformation("PO poll completed. Headers: {Headers} ({FailedHeaders} failed), Details: {Details} ({FailedDetails} failed)",
                 processedHeaders, failedHeaders, processedDetails, failedDetails);

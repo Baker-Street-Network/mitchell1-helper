@@ -100,6 +100,12 @@ public class MitchellAccountSyncService(
                 SyncState.MarkGLAccountError(msg);
                 logger.LogWarning(msg);
             }
+            else
+            {
+                // A clean poll clears a stale error. Without this, an entity that has had
+                // no changes keeps reporting a problem that was resolved days ago.
+                SyncState.MarkGLAccountError(null);
+            }
 
             logger.LogInformation("GL Account poll completed. Processed {Count} record(s), {Failed} failure(s)", processed, failed);
         }

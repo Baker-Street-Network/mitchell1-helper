@@ -103,10 +103,12 @@ public class SyncState
         }
     }
 
-    public void MarkGLAccountError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkGLAccountError(string? error)
     {
         lock (_lock)
         {
+            if (LastGLAccountError == error) return;
             LastGLAccountError = error;
             Save();
         }
@@ -136,19 +138,23 @@ public class SyncState
         }
     }
 
-    public void MarkError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkError(string? error)
     {
         lock (_lock)
         {
+            if (LastError == error) return;
             LastError = error;
             Save();
         }
     }
 
-    public void MarkVendorError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkVendorError(string? error)
     {
         lock (_lock)
         {
+            if (LastVendorError == error) return;
             LastVendorError = error;
             Save();
         }
@@ -167,10 +173,12 @@ public class SyncState
         }
     }
 
-    public void MarkPartError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkPartError(string? error)
     {
         lock (_lock)
         {
+            if (LastPartError == error) return;
             LastPartError = error;
             Save();
         }
@@ -202,28 +210,34 @@ public class SyncState
         }
     }
 
-    public void MarkRepairOrderError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkRepairOrderError(string? error)
     {
         lock (_lock)
         {
+            if (LastRepairOrderError == error) return;
             LastRepairOrderError = error;
             Save();
         }
     }
 
-    public void MarkRepairOrderLineItemError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkRepairOrderLineItemError(string? error)
     {
         lock (_lock)
         {
+            if (LastRepairOrderLineItemError == error) return;
             LastRepairOrderLineItemError = error;
             Save();
         }
     }
 
-    public void MarkPOError(string error)
+    /// <summary>Records this entity's poll error, or clears it when passed null.</summary>
+    public void MarkPOError(string? error)
     {
         lock (_lock)
         {
+            if (LastPOError == error) return;
             LastPOError = error;
             Save();
         }

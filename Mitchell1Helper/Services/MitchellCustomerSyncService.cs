@@ -138,6 +138,12 @@ public class MitchellCustomerSyncService(
                 SyncState.MarkError(msg);
                 logger.LogWarning(msg);
             }
+            else
+            {
+                // A clean poll clears a stale error. Without this, an entity that has had
+                // no changes keeps reporting a problem that was resolved days ago.
+                SyncState.MarkError(null);
+            }
 
             logger.LogInformation("Customer poll completed. Processed {Count} change(s), {Failed} failure(s)", processed, failed);
         }

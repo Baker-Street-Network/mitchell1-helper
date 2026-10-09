@@ -103,6 +103,12 @@ public class MitchellRepairOrderSyncService(
                 if (roQuarantined != null) msg = string.IsNullOrEmpty(msg) ? roQuarantined : msg + " " + roQuarantined;
                 SyncState.MarkRepairOrderError(msg);
             }
+            else
+            {
+                // A clean poll clears a stale error. Without this, an entity that has had
+                // no changes keeps reporting a problem that was resolved days ago.
+                SyncState.MarkRepairOrderError(null);
+            }
 
             totalProcessed += processed;
             logger.LogInformation("RepairOrder batch: {Batch} processed, {Failed} failed, {Total} total",
@@ -207,6 +213,12 @@ public class MitchellRepairOrderSyncService(
                     : "";
                 if (liQuarantined != null) msg = string.IsNullOrEmpty(msg) ? liQuarantined : msg + " " + liQuarantined;
                 SyncState.MarkRepairOrderLineItemError(msg);
+            }
+            else
+            {
+                // A clean poll clears a stale error. Without this, an entity that has had
+                // no changes keeps reporting a problem that was resolved days ago.
+                SyncState.MarkRepairOrderLineItemError(null);
             }
 
             totalProcessed += processed;
