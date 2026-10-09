@@ -33,6 +33,7 @@ public class MitchellRepairOrderSyncService(
         {
             int processed = 0;
             int failed = 0;
+            var cursor = new CursorTracker();
             try
             {
                 logger.LogInformation("Starting RepairOrder poll. Last: ChangeDate={Date:O}, Id={Id}",
@@ -54,18 +55,14 @@ public class MitchellRepairOrderSyncService(
                 await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
                 var (columns, changeDateOrdinal) = ReadColumnSchema(reader);
 
-                DateTime? newestChangeDate = null;
-                long? newestRepairOrderId = null;
-                // A failed row holds the cursor so it is retried on the next poll.
-                bool cursorBlocked = false;
-
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     long repairOrderId = 0;
+                    DateTime? changeDate = null;
                     try
                     {
                         repairOrderId = Convert.ToInt64(reader[Mitchell1Schema.RepairOrderIdColumn]);
-                        DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, repairOrderId, "RepairOrder", logger);
+                        changeDate = ParseChangeDate(reader, changeDateOrdinal, repairOrderId, "RepairOrder", logger);
 
                         var values = ConvertKeysToSnakeCase(BuildRepairOrderValues(reader, columns, repairOrderId));
                         await UpsertInOdooAsync(
@@ -74,24 +71,20 @@ public class MitchellRepairOrderSyncService(
 
                         MarkRowSucceeded("RepairOrder", repairOrderId);
                         processed++;
-                        if (!cursorBlocked)
-                        {
-                            newestChangeDate = changeDate;
-                            newestRepairOrderId = repairOrderId;
-                        }
+                        cursor.Advance(changeDate.Value, repairOrderId);
                     }
                     catch (Exception ex)
                     {
                         failed++;
-                        if (ShouldHoldCursorAfterFailure("RepairOrder", repairOrderId, ex, logger)) cursorBlocked = true;
+                        HandleRowFailure("RepairOrder", repairOrderId, changeDate, cursor, ex, logger);
                     }
                 }
 
-                if (newestChangeDate.HasValue && newestRepairOrderId.HasValue)
+                if (cursor.HasAdvanced)
                 {
-                    _lastChangeDateUtc = newestChangeDate.Value;
-                    _lastRepairOrderId = newestRepairOrderId.Value;
-                    SyncState.MarkRepairOrderSuccess(newestChangeDate, newestRepairOrderId, processed);
+                    _lastChangeDateUtc = cursor.ChangeDate!.Value;
+                    _lastRepairOrderId = cursor.Id!.Value;
+                    SyncState.MarkRepairOrderSuccess(cursor.ChangeDate, cursor.Id, processed);
                 }
             }
             catch (Exception ex)
@@ -101,7 +94,7 @@ public class MitchellRepairOrderSyncService(
                 throw;
             }
 
-            string? roQuarantined = QuarantineSummary();
+            string? roQuarantined = QuarantineSummary("RepairOrder");
             if (failed > 0 || roQuarantined != null)
             {
                 string msg = failed > 0
@@ -114,9 +107,10 @@ public class MitchellRepairOrderSyncService(
             totalProcessed += processed;
             logger.LogInformation("RepairOrder batch: {Batch} processed, {Failed} failed, {Total} total",
                 processed, failed, totalProcessed);
-            // Stop when the batch was not full AND nothing was quarantined this round; a
-            // quarantined row means the cursor just moved past it, so there may be more to do.
-            if (processed + failed < AppSettings.Sync.BatchSize) break;
+            // A full batch means there is probably more waiting, so keep draining. But only if the
+            // cursor actually moved — re-running the identical query would just re-read the same
+            // rows and burn the retry budget of a blocked row in milliseconds instead of across polls.
+            if (processed + failed < AppSettings.Sync.BatchSize || !cursor.HasAdvanced) break;
         }
 
         await PollAndSyncLineItemsAsync(cancellationToken);
@@ -130,10 +124,7 @@ public class MitchellRepairOrderSyncService(
         {
             int processed = 0;
             int failed = 0;
-            DateTime? newestChangeDate = null;
-            long? newestLineItemId = null;
-            // A failed row holds the cursor so it is retried on the next poll.
-            bool cursorBlocked = false;
+            var cursor = new CursorTracker();
 
             try
             {
@@ -176,11 +167,12 @@ public class MitchellRepairOrderSyncService(
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     long lineItemId = 0;
+                    DateTime? changeDate = null;
                     try
                     {
                         lineItemId = Convert.ToInt64(reader[Mitchell1Schema.LineItemIdColumn]);
                         long repairOrderId = Convert.ToInt64(reader[Mitchell1Schema.RepairOrderIdColumn]);
-                        DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, lineItemId, "LineItem", logger);
+                        changeDate = ParseChangeDate(reader, changeDateOrdinal, lineItemId, "LineItem", logger);
 
                         var values = ConvertKeysToSnakeCase(BuildLineItemValues(reader, columns, lineItemId, repairOrderId));
                         await UpsertInOdooAsync(
@@ -189,16 +181,12 @@ public class MitchellRepairOrderSyncService(
 
                         MarkRowSucceeded("LineItem", lineItemId);
                         processed++;
-                        if (!cursorBlocked)
-                        {
-                            newestChangeDate = changeDate;
-                            newestLineItemId = lineItemId;
-                        }
+                        cursor.Advance(changeDate.Value, lineItemId);
                     }
                     catch (Exception ex)
                     {
                         failed++;
-                        if (ShouldHoldCursorAfterFailure("LineItem", lineItemId, ex, logger)) cursorBlocked = true;
+                        HandleRowFailure("LineItem", lineItemId, changeDate, cursor, ex, logger);
                     }
                 }
             }
@@ -208,17 +196,24 @@ public class MitchellRepairOrderSyncService(
                 break;
             }
 
-            if (newestChangeDate.HasValue && newestLineItemId.HasValue)
-                SyncState.MarkRepairOrderLineItemSuccess(newestChangeDate, newestLineItemId, processed);
+            if (cursor.HasAdvanced)
+                SyncState.MarkRepairOrderLineItemSuccess(cursor.ChangeDate, cursor.Id, processed);
 
-            if (failed > 0)
-                SyncState.MarkRepairOrderLineItemError(
-                    $"{failed} line item(s) failed to sync. See log for details.");
+            string? liQuarantined = QuarantineSummary("LineItem");
+            if (failed > 0 || liQuarantined != null)
+            {
+                string msg = failed > 0
+                    ? $"{failed} line item(s) failed to sync. See log for details."
+                    : "";
+                if (liQuarantined != null) msg = string.IsNullOrEmpty(msg) ? liQuarantined : msg + " " + liQuarantined;
+                SyncState.MarkRepairOrderLineItemError(msg);
+            }
 
             totalProcessed += processed;
             logger.LogInformation("LineItem batch: {Batch} processed, {Failed} failed, {Total} total",
                 processed, failed, totalProcessed);
-            if (processed + failed < AppSettings.Sync.BatchSize) break;
+            // See the RepairOrder drain loop: only keep going while the cursor is actually moving.
+            if (processed + failed < AppSettings.Sync.BatchSize || !cursor.HasAdvanced) break;
         }
     }
 

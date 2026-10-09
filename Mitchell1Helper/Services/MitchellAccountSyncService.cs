@@ -33,7 +33,11 @@ public class MitchellAccountSyncService(
         logger.LogInformation("Starting GL Account poll (full snapshot)");
 
         int processed = 0;
-        var seenIds = new List<long>();
+        int failed = 0;
+        // Ids present in Mitchell1 this poll, whether or not they synced. ArchiveMissingAsync
+        // compares against this, so a record that merely failed to sync is not mistaken for one
+        // that was deleted and archived in Odoo.
+        var presentIds = new List<long>();
 
         try
         {
@@ -45,30 +49,59 @@ public class MitchellAccountSyncService(
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
             var (columns, _) = ReadColumnSchema(reader);
 
+            var pending = new List<(long Id, Dictionary<string, object> Values)>();
             while (await reader.ReadAsync(cancellationToken))
             {
                 long id = 0;
                 try
                 {
                     id = Convert.ToInt64(reader[Mitchell1Schema.GLAccountIdColumn]);
-                    var values = BuildValues(reader, columns, id);
-                    string cacheKey = $"glaccount:{id}";
+                    pending.Add((id, BuildValues(reader, columns, id)));
+                    presentIds.Add(id);
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    logger.LogError(ex, "Failed to read GL Account {Id}. Skipping.", id);
+                }
+            }
 
-                    await UpsertInOdooAsync(AppSettings.Odoo.AccountModel, "gl_account_id", id, values, cacheKey, cancellationToken);
+            await reader.CloseAsync();
 
-                    seenIds.Add(id);
+            // Unlike the cursor-based polls, this one re-reads every GL account every time, so
+            // existence is resolved for the whole snapshot in one call instead of one per account.
+            var knownIds = await FindManyInOdooAsync(
+                AppSettings.Odoo.AccountModel, "gl_account_id",
+                pending.Select(p => (object)p.Id).ToList(), cancellationToken);
+
+            foreach (var (id, values) in pending)
+            {
+                try
+                {
+                    await UpsertInOdooAsync(
+                        AppSettings.Odoo.AccountModel, "gl_account_id", id, values,
+                        $"glaccount:{id}", cancellationToken, knownIds);
                     processed++;
                 }
                 catch (Exception ex)
                 {
+                    failed++;
                     logger.LogError(ex, "Failed to process GL Account {Id}. Skipping.", id);
                 }
             }
 
-            await ArchiveMissingAsync(seenIds, cancellationToken);
+            await ArchiveMissingAsync(presentIds, cancellationToken);
 
-            SyncState.MarkGLAccountSuccess(processed, [.. seenIds]);
-            logger.LogInformation("GL Account poll completed. Processed {Count} record(s)", processed);
+            SyncState.MarkGLAccountSuccess(processed, [.. presentIds]);
+
+            if (failed > 0)
+            {
+                string msg = $"{failed} GL account(s) failed to sync. See log for details.";
+                SyncState.MarkGLAccountError(msg);
+                logger.LogWarning(msg);
+            }
+
+            logger.LogInformation("GL Account poll completed. Processed {Count} record(s), {Failed} failure(s)", processed, failed);
         }
         catch (Exception ex)
         {
@@ -78,15 +111,15 @@ public class MitchellAccountSyncService(
         }
     }
 
-    private async Task ArchiveMissingAsync(List<long> seenIds, CancellationToken cancellationToken)
+    private async Task ArchiveMissingAsync(List<long> presentIds, CancellationToken cancellationToken)
     {
-        long[]? previouslySynced = SyncState.LastSyncedGLAccountIds;
-        if (previouslySynced == null || previouslySynced.Length == 0) return;
+        long[]? previouslyPresent = SyncState.LastSyncedGLAccountIds;
+        if (previouslyPresent == null || previouslyPresent.Length == 0) return;
 
-        var seen = new HashSet<long>(seenIds);
-        foreach (long id in previouslySynced)
+        var present = new HashSet<long>(presentIds);
+        foreach (long id in previouslyPresent)
         {
-            if (seen.Contains(id)) continue;
+            if (present.Contains(id)) continue;
             try
             {
                 string cacheKey = $"glaccount:{id}";

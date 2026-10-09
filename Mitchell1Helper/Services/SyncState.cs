@@ -266,6 +266,12 @@ public class SyncState
                 LastRepairOrderError = state.LastRepairOrderError;
                 LastRepairOrderBatchProcessedCount = state.LastRepairOrderBatchProcessedCount;
 
+                LastSuccessfulRepairOrderLineItemPollUtc = state.LastSuccessfulRepairOrderLineItemPollUtc;
+                LastProcessedRepairOrderLineItemChangeDateUtc = state.LastProcessedRepairOrderLineItemChangeDateUtc;
+                LastProcessedRepairOrderLineItemId = state.LastProcessedRepairOrderLineItemId;
+                LastRepairOrderLineItemError = state.LastRepairOrderLineItemError;
+                LastRepairOrderLineItemBatchProcessedCount = state.LastRepairOrderLineItemBatchProcessedCount;
+
                 LastSuccessfulGLAccountPollUtc = state.LastSuccessfulGLAccountPollUtc;
                 LastGLAccountError = state.LastGLAccountError;
                 LastGLAccountProcessedCount = state.LastGLAccountProcessedCount;
@@ -316,6 +322,12 @@ public class SyncState
                 LastProcessedRepairOrderId = LastProcessedRepairOrderId,
                 LastRepairOrderError = LastRepairOrderError,
                 LastRepairOrderBatchProcessedCount = LastRepairOrderBatchProcessedCount,
+
+                LastSuccessfulRepairOrderLineItemPollUtc = LastSuccessfulRepairOrderLineItemPollUtc,
+                LastProcessedRepairOrderLineItemChangeDateUtc = LastProcessedRepairOrderLineItemChangeDateUtc,
+                LastProcessedRepairOrderLineItemId = LastProcessedRepairOrderLineItemId,
+                LastRepairOrderLineItemError = LastRepairOrderLineItemError,
+                LastRepairOrderLineItemBatchProcessedCount = LastRepairOrderLineItemBatchProcessedCount,
 
                 LastSuccessfulGLAccountPollUtc = LastSuccessfulGLAccountPollUtc,
                 LastGLAccountError = LastGLAccountError,
@@ -375,6 +387,12 @@ public class SyncState
         public long? LastProcessedRepairOrderId { get; set; }
         public string? LastRepairOrderError { get; set; }
         public int LastRepairOrderBatchProcessedCount { get; set; }
+
+        public DateTime? LastSuccessfulRepairOrderLineItemPollUtc { get; set; }
+        public DateTime? LastProcessedRepairOrderLineItemChangeDateUtc { get; set; }
+        public long? LastProcessedRepairOrderLineItemId { get; set; }
+        public string? LastRepairOrderLineItemError { get; set; }
+        public int LastRepairOrderLineItemBatchProcessedCount { get; set; }
 
         public DateTime? LastSuccessfulGLAccountPollUtc { get; set; }
         public string? LastGLAccountError { get; set; }

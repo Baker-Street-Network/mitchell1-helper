@@ -72,11 +72,7 @@ public class MitchellCustomerSyncService(
 
         int processed = 0;
         int failed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestId = null;
-        // Once a row fails the cursor must stop advancing, otherwise a later success in the
-        // same batch moves it past the failure and that record is never queried again.
-        bool cursorBlocked = false;
+        var cursor = new CursorTracker();
 
         try
         {
@@ -95,10 +91,11 @@ public class MitchellCustomerSyncService(
             while (await reader.ReadAsync(cancellationToken))
             {
                 long id = 0;
+                DateTime? changeDate = null;
                 try
                 {
                     id = Convert.ToInt64(reader[Mitchell1Schema.IdColumn]);
-                    DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, id, "Customer", logger);
+                    changeDate = ParseChangeDate(reader, changeDateOrdinal, id, "Customer", logger);
                     string domainValue = AppSettings.Odoo.ExternalRefPrefix + id;
                     string cacheKey = $"customer:{domainValue}";
 
@@ -115,27 +112,23 @@ public class MitchellCustomerSyncService(
 
                     MarkRowSucceeded("Customer", id);
                     processed++;
-                    if (!cursorBlocked)
-                    {
-                        newestChangeDate = changeDate;
-                        newestId = id;
-                    }
+                    cursor.Advance(changeDate.Value, id);
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    if (ShouldHoldCursorAfterFailure("Customer", id, ex, logger)) cursorBlocked = true;
+                    HandleRowFailure("Customer", id, changeDate, cursor, ex, logger);
                 }
             }
 
-            if (newestChangeDate.HasValue && newestId.HasValue)
+            if (cursor.HasAdvanced)
             {
-                _lastChangeDateUtc = newestChangeDate.Value;
-                _lastCustomerId = newestId.Value;
-                SyncState.MarkSuccess(newestChangeDate, newestId, processed);
+                _lastChangeDateUtc = cursor.ChangeDate!.Value;
+                _lastCustomerId = cursor.Id!.Value;
+                SyncState.MarkSuccess(cursor.ChangeDate, cursor.Id, processed);
             }
 
-            string? quarantined = QuarantineSummary();
+            string? quarantined = QuarantineSummary("Customer");
             if (failed > 0 || quarantined != null)
             {
                 string msg = failed > 0

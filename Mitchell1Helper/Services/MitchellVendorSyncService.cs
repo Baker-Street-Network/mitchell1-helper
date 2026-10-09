@@ -61,10 +61,7 @@ public class MitchellVendorSyncService(
 
         int processed = 0;
         int failed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestId = null;
-        // See MitchellCustomerSyncService: a failed row must hold the cursor.
-        bool cursorBlocked = false;
+        var cursor = new CursorTracker();
 
         try
         {
@@ -83,10 +80,11 @@ public class MitchellVendorSyncService(
             while (await reader.ReadAsync(cancellationToken))
             {
                 long id = 0;
+                DateTime? changeDate = null;
                 try
                 {
                     id = Convert.ToInt64(reader[Mitchell1Schema.VendorIdColumn]);
-                    DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, id, "Vendor", logger);
+                    changeDate = ParseChangeDate(reader, changeDateOrdinal, id, "Vendor", logger);
                     string domainValue = AppSettings.Odoo.ExternalRefPrefix + "VENDOR-" + id;
                     string cacheKey = $"vendor:{domainValue}";
 
@@ -103,29 +101,29 @@ public class MitchellVendorSyncService(
 
                     MarkRowSucceeded("Vendor", id);
                     processed++;
-                    if (!cursorBlocked)
-                    {
-                        newestChangeDate = changeDate;
-                        newestId = id;
-                    }
+                    cursor.Advance(changeDate.Value, id);
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    if (ShouldHoldCursorAfterFailure("Vendor", id, ex, logger)) cursorBlocked = true;
+                    HandleRowFailure("Vendor", id, changeDate, cursor, ex, logger);
                 }
             }
 
-            if (newestChangeDate.HasValue && newestId.HasValue)
+            if (cursor.HasAdvanced)
             {
-                _lastChangeDateUtc = newestChangeDate.Value;
-                _lastVendorId = newestId.Value;
-                SyncState.MarkVendorSuccess(newestChangeDate, newestId, processed);
+                _lastChangeDateUtc = cursor.ChangeDate!.Value;
+                _lastVendorId = cursor.Id!.Value;
+                SyncState.MarkVendorSuccess(cursor.ChangeDate, cursor.Id, processed);
             }
 
-            if (failed > 0)
+            string? quarantined = QuarantineSummary("Vendor");
+            if (failed > 0 || quarantined != null)
             {
-                string msg = $"{failed} vendor record(s) failed to sync; cursor held at ChangeDate={_lastChangeDateUtc:O}, Id={_lastVendorId}. See log for details.";
+                string msg = failed > 0
+                    ? $"{failed} vendor record(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastVendorId}. See log for details."
+                    : "";
+                if (quarantined != null) msg = string.IsNullOrEmpty(msg) ? quarantined : msg + " " + quarantined;
                 SyncState.MarkVendorError(msg);
                 logger.LogWarning(msg);
             }

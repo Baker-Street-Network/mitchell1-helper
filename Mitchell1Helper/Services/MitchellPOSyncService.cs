@@ -32,10 +32,8 @@ public class MitchellPOSyncService(
         int processedHeaders = 0;
         int processedDetails = 0;
         int failedHeaders = 0;
-        DateTime? newestChangeDate = null;
-        long? newestPOMasterId = null;
-        // A failed row holds the cursor so it is retried on the next poll.
-        bool cursorBlocked = false;
+        int failedDetails = 0;
+        var cursor = new CursorTracker();
 
         try
         {
@@ -60,10 +58,11 @@ public class MitchellPOSyncService(
             while (await headerReader.ReadAsync(cancellationToken))
             {
                 long poMasterId = 0;
+                DateTime? changeDate = null;
                 try
                 {
                     poMasterId = Convert.ToInt64(headerReader[Mitchell1Schema.POMasterIdColumn]);
-                    DateTime changeDate = ParseChangeDate(headerReader, headerChangeDateOrdinal, poMasterId, "PO Header", logger);
+                    changeDate = ParseChangeDate(headerReader, headerChangeDateOrdinal, poMasterId, "PO Header", logger);
 
                     var values = ConvertKeysToSnakeCase(BuildPOHeaderValues(headerReader, headerColumns));
                     await UpsertInOdooAsync(
@@ -72,16 +71,12 @@ public class MitchellPOSyncService(
 
                     MarkRowSucceeded("PO Header", poMasterId);
                     processedHeaders++;
-                    if (!cursorBlocked)
-                    {
-                        newestChangeDate = changeDate;
-                        newestPOMasterId = poMasterId;
-                    }
+                    cursor.Advance(changeDate.Value, poMasterId);
                 }
                 catch (Exception ex)
                 {
                     failedHeaders++;
-                    if (ShouldHoldCursorAfterFailure("PO Header", poMasterId, ex, logger)) cursorBlocked = true;
+                    HandleRowFailure("PO Header", poMasterId, changeDate, cursor, ex, logger);
                 }
             }
 
@@ -89,28 +84,29 @@ public class MitchellPOSyncService(
 
             // ── PO Details ────────────────────────────────────────────────────
 
-            processedDetails = await SyncPODetailsAsync(conn, cancellationToken);
+            (processedDetails, failedDetails) = await SyncPODetailsAsync(conn, cancellationToken);
 
-            if (newestChangeDate.HasValue && newestPOMasterId.HasValue)
+            if (cursor.HasAdvanced)
             {
-                _lastChangeDateUtc = newestChangeDate.Value;
-                _lastPOMasterId = newestPOMasterId.Value;
-                SyncState.MarkPOSuccess(newestChangeDate, newestPOMasterId, processedHeaders, processedDetails);
+                _lastChangeDateUtc = cursor.ChangeDate!.Value;
+                _lastPOMasterId = cursor.Id!.Value;
+                SyncState.MarkPOSuccess(cursor.ChangeDate, cursor.Id, processedHeaders, processedDetails);
             }
 
-            string? poQuarantined = QuarantineSummary();
-            if (failedHeaders > 0 || poQuarantined != null)
+            string? poQuarantined = QuarantineSummary("PO Header", "PO Detail");
+            int failed = failedHeaders + failedDetails;
+            if (failed > 0 || poQuarantined != null)
             {
-                string msg = failedHeaders > 0
-                    ? $"{failedHeaders} purchase order(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastPOMasterId}. See log for details."
+                string msg = failed > 0
+                    ? $"{failed} purchase order record(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastPOMasterId}. See log for details."
                     : "";
                 if (poQuarantined != null) msg = string.IsNullOrEmpty(msg) ? poQuarantined : msg + " " + poQuarantined;
                 SyncState.MarkPOError(msg);
                 logger.LogWarning(msg);
             }
 
-            logger.LogInformation("PO poll completed. Headers: {Headers} ({Failed} failed), Details: {Details}",
-                processedHeaders, failedHeaders, processedDetails);
+            logger.LogInformation("PO poll completed. Headers: {Headers} ({FailedHeaders} failed), Details: {Details} ({FailedDetails} failed)",
+                processedHeaders, failedHeaders, processedDetails, failedDetails);
         }
         catch (Exception ex)
         {
@@ -120,13 +116,11 @@ public class MitchellPOSyncService(
         }
     }
 
-    private async Task<int> SyncPODetailsAsync(SqlConnection conn, CancellationToken cancellationToken)
+    private async Task<(int processed, int failed)> SyncPODetailsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
         int processed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestDetailId = null;
-        // A failed row holds the cursor so it is retried on the next poll.
-        bool cursorBlocked = false;
+        int failed = 0;
+        var cursor = new CursorTracker();
 
         string detailTable = QuoteIdentifier(Mitchell1Schema.PODetailTable);
         string detailIdCol = QuoteIdentifier(Mitchell1Schema.PODetailIdColumn);
@@ -152,10 +146,11 @@ public class MitchellPOSyncService(
         while (await reader.ReadAsync(cancellationToken))
         {
             long poDetailId = 0;
+            DateTime? changeDate = null;
             try
             {
                 poDetailId = Convert.ToInt64(reader[Mitchell1Schema.PODetailIdColumn]);
-                DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, poDetailId, "PO Detail", logger);
+                changeDate = ParseChangeDate(reader, changeDateOrdinal, poDetailId, "PO Detail", logger);
 
                 var values = ConvertKeysToSnakeCase(BuildPODetailValues(reader, columns));
                 await UpsertInOdooAsync(
@@ -164,22 +159,19 @@ public class MitchellPOSyncService(
 
                 MarkRowSucceeded("PO Detail", poDetailId);
                 processed++;
-                if (!cursorBlocked)
-                {
-                    newestChangeDate = changeDate;
-                    newestDetailId = poDetailId;
-                }
+                cursor.Advance(changeDate.Value, poDetailId);
             }
             catch (Exception ex)
             {
-                if (ShouldHoldCursorAfterFailure("PO Detail", poDetailId, ex, logger)) cursorBlocked = true;
+                failed++;
+                HandleRowFailure("PO Detail", poDetailId, changeDate, cursor, ex, logger);
             }
         }
 
-        if (newestChangeDate.HasValue && newestDetailId.HasValue)
-            SyncState.MarkPODetailSuccess(newestChangeDate, newestDetailId);
+        if (cursor.HasAdvanced)
+            SyncState.MarkPODetailSuccess(cursor.ChangeDate, cursor.Id);
 
-        return processed;
+        return (processed, failed);
     }
 
     private static Dictionary<string, object> BuildPOHeaderValues(SqlDataReader reader, HashSet<string> columns)

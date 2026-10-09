@@ -80,40 +80,66 @@ public class SyncFailureTracker
     }
 
     /// <summary>
-    /// Records that have exhausted their retries, newest failure first.
+    /// Records that have exhausted their retries, newest failure first. Restricted to the given
+    /// entities when any are named; pass none for the overall total.
     /// </summary>
-    public IReadOnlyList<KeyValuePair<string, FailureEntry>> GetQuarantined(int maxAttempts)
+    public IReadOnlyList<KeyValuePair<string, FailureEntry>> GetQuarantined(int maxAttempts, params string[] entityNames)
     {
         lock (_lock)
         {
             return _failures
-                .Where(kv => kv.Value.Attempts >= maxAttempts)
+                .Where(kv => kv.Value.Attempts >= maxAttempts && MatchesEntity(kv.Key, entityNames))
                 .OrderByDescending(kv => kv.Value.LastFailedUtc)
                 .Select(kv => new KeyValuePair<string, FailureEntry>(kv.Key, kv.Value))
                 .ToList();
         }
     }
 
-    public int QuarantinedCount(int maxAttempts)
+    public int QuarantinedCount(int maxAttempts, params string[] entityNames)
     {
         lock (_lock)
         {
-            return _failures.Count(kv => kv.Value.Attempts >= maxAttempts);
+            return _failures.Count(kv => kv.Value.Attempts >= maxAttempts && MatchesEntity(kv.Key, entityNames));
         }
     }
 
     /// <summary>
     /// One-line summary for sync state / the status endpoint, or null when nothing is quarantined.
+    /// A caller reporting one entity's health must name that entity, otherwise it reports every
+    /// other entity's failures as its own.
     /// </summary>
-    public string? Describe(int maxAttempts, int sampleSize = 5)
+    public string? Describe(int maxAttempts, params string[] entityNames)
     {
-        var quarantined = GetQuarantined(maxAttempts);
+        const int sampleSize = 5;
+
+        var quarantined = GetQuarantined(maxAttempts, entityNames);
         if (quarantined.Count == 0) return null;
 
         var sample = quarantined.Take(sampleSize).Select(kv => kv.Key);
         string suffix = quarantined.Count > sampleSize ? $", +{quarantined.Count - sampleSize} more" : "";
         return $"{quarantined.Count} record(s) quarantined after {maxAttempts} failed attempts: " +
                $"{string.Join(", ", sample)}{suffix}. See log for details.";
+    }
+
+    /// <summary>
+    /// Whether a <c>"{entity}:{id}"</c> key belongs to one of the named entities.
+    /// An empty filter matches everything, so callers wanting the overall total pass none.
+    /// </summary>
+    private static bool MatchesEntity(string key, string[] entityNames)
+    {
+        if (entityNames.Length == 0) return true;
+
+        foreach (string name in entityNames)
+        {
+            if (key.Length > name.Length
+                && key[name.Length] == ':'
+                && key.StartsWith(name, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string Truncate(string value, int max) =>

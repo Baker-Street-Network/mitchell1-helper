@@ -30,7 +30,7 @@ public class MitchellPartSyncService(
 
         try
         {
-            var (newestDate, newestId, processed) = await PollFlatEntityAsync(
+            var (cursor, processed, failed) = await PollFlatEntityAsync(
                 entityName: "Part",
                 sqlTable: Mitchell1Schema.PartsTable,
                 sqlIdColumn: Mitchell1Schema.PartIdColumn,
@@ -46,14 +46,25 @@ public class MitchellPartSyncService(
                 logger: logger,
                 cancellationToken: cancellationToken);
 
-            if (newestDate.HasValue && newestId.HasValue)
+            if (cursor.HasAdvanced)
             {
-                _lastChangeDateUtc = newestDate.Value;
-                _lastPartId = newestId.Value;
-                SyncState.MarkPartSuccess(newestDate, newestId, processed);
+                _lastChangeDateUtc = cursor.ChangeDate!.Value;
+                _lastPartId = cursor.Id!.Value;
+                SyncState.MarkPartSuccess(cursor.ChangeDate, cursor.Id, processed);
             }
 
-            logger.LogInformation("Part poll completed. Processed {Count} change(s)", processed);
+            string? quarantined = QuarantineSummary("Part");
+            if (failed > 0 || quarantined != null)
+            {
+                string msg = failed > 0
+                    ? $"{failed} part record(s) failed to sync at ChangeDate={_lastChangeDateUtc:O}, Id={_lastPartId}. See log for details."
+                    : "";
+                if (quarantined != null) msg = string.IsNullOrEmpty(msg) ? quarantined : msg + " " + quarantined;
+                SyncState.MarkPartError(msg);
+                logger.LogWarning(msg);
+            }
+
+            logger.LogInformation("Part poll completed. Processed {Count} change(s), {Failed} failure(s)", processed, failed);
         }
         catch (Exception ex)
         {

@@ -23,12 +23,43 @@ public abstract class SyncServiceBase(
     protected int MaxSyncAttempts => Math.Max(1, AppSettings.Sync.MaxSyncAttempts);
 
     /// <summary>
-    /// Handles a per-row failure. Returns true if the cursor should be held so the record
-    /// is retried on the next poll, or false once the record has exhausted its attempts and
-    /// been quarantined — at which point the cursor is allowed past it so the rest of the
-    /// queue keeps flowing.
+    /// Tracks how far a poll may move its cursor.
+    /// <para>
+    /// A row that failed but still has retries left blocks the cursor, so it and everything
+    /// after it are re-read on the next poll. A quarantined row instead steps the cursor past
+    /// itself — otherwise it is re-read every poll forever and nothing behind it ever syncs,
+    /// which is the exact dam quarantine exists to prevent.
+    /// </para>
     /// </summary>
-    protected bool ShouldHoldCursorAfterFailure(string entityName, long id, Exception ex, ILogger logger)
+    protected sealed class CursorTracker
+    {
+        private bool _blocked;
+
+        public DateTime? ChangeDate { get; private set; }
+        public long? Id { get; private set; }
+
+        public bool HasAdvanced => ChangeDate.HasValue && Id.HasValue;
+
+        public void Advance(DateTime changeDate, long id)
+        {
+            if (_blocked) return;
+            ChangeDate = changeDate;
+            Id = id;
+        }
+
+        public void Block() => _blocked = true;
+    }
+
+    /// <summary>
+    /// Handles a per-row failure: records the attempt and decides whether <paramref name="cursor"/>
+    /// holds at this row or steps past it.
+    /// <para>
+    /// <paramref name="changeDate"/> is null when the row's id or change date could not even be
+    /// read; there is then nowhere to step to, so the cursor has to hold.
+    /// </para>
+    /// </summary>
+    protected void HandleRowFailure(
+        string entityName, long id, DateTime? changeDate, CursorTracker cursor, Exception ex, ILogger logger)
     {
         int attempts = Failures.RecordFailure(entityName, id, ex.Message);
 
@@ -36,19 +67,32 @@ public abstract class SyncServiceBase(
         {
             logger.LogError(ex, "Failed to process {Entity} {Id} (attempt {Attempt} of {Max}). Holding cursor; will retry next poll.",
                 entityName, id, attempts, MaxSyncAttempts);
-            return true;
+            cursor.Block();
+            return;
         }
 
-        logger.LogError(ex, "Failed to process {Entity} {Id} {Attempt} times. QUARANTINED - advancing the cursor past it so the queue is not blocked. Fix the record and it will sync the next time it changes.",
+        if (!changeDate.HasValue)
+        {
+            logger.LogError(ex, "Failed to process {Entity} {Id} {Attempt} times and its change date could not be read, so the cursor cannot step past it. Holding.",
+                entityName, id, attempts);
+            cursor.Block();
+            return;
+        }
+
+        cursor.Advance(changeDate.Value, id);
+        logger.LogError(ex, "Failed to process {Entity} {Id} {Attempt} times. QUARANTINED - stepped the cursor past it so the queue is not blocked. Fix the record and it will sync the next time it changes.",
             entityName, id, attempts);
-        return false;
     }
 
     /// <summary>Clears a record's failure history after a successful sync.</summary>
     protected void MarkRowSucceeded(string entityName, long id) => Failures.Clear(entityName, id);
 
-    /// <summary>Appends any quarantine summary to a poll's error message.</summary>
-    protected string? QuarantineSummary() => Failures.Describe(MaxSyncAttempts);
+    /// <summary>
+    /// Quarantine summary for the given entities, or null when none of them have quarantined
+    /// records. Always pass the entities the calling poll owns: an unscoped summary reports one
+    /// entity's bad records as every other entity's error too.
+    /// </summary>
+    protected string? QuarantineSummary(params string[] entityNames) => Failures.Describe(MaxSyncAttempts, entityNames);
 
     private static readonly Regex IdentifierRegex = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
@@ -266,21 +310,87 @@ public abstract class SyncServiceBase(
 
     // ── Odoo operations ──────────────────────────────────────────────────────
 
+    // Odoo hides archived records from search by default. This sync owns the active flag, so
+    // every lookup has to see them — otherwise an archived record reads as missing and a blind
+    // create duplicates it.
+    private static readonly Dictionary<string, object> IncludeArchivedContext = new() { ["active_test"] = false };
+
     protected async Task<int?> FindInOdooAsync(string model, string domainField, object domainValue, CancellationToken ct)
     {
         object[] domain = { new object[] { domainField, "=", domainValue } };
-        var kwargs = new Dictionary<string, object> { ["fields"] = new[] { "id" }, ["limit"] = 1 };
+        var kwargs = new Dictionary<string, object>
+        {
+            ["fields"] = new[] { "id" },
+            ["limit"] = 1,
+            ["context"] = IncludeArchivedContext
+        };
         var result = await OdooRpcClient.ExecuteKwAsync(model, "search_read", [domain], kwargs, ct);
         if (result.ValueKind != JsonValueKind.Array || result.GetArrayLength() == 0) return null;
         return result[0].GetProperty("id").GetInt32();
     }
 
+    /// <summary>
+    /// Resolves many Mitchell1 keys to Odoo ids in one call, keyed by the key's string form.
+    /// Lets a poll that re-reads the same rows every cycle verify they still exist in Odoo
+    /// without one round-trip per record.
+    /// </summary>
+    protected async Task<Dictionary<string, int>> FindManyInOdooAsync(
+        string model, string domainField, IReadOnlyCollection<object> domainValues, CancellationToken ct)
+    {
+        var found = new Dictionary<string, int>(domainValues.Count, StringComparer.Ordinal);
+        if (domainValues.Count == 0) return found;
+
+        object[] domain = { new object[] { domainField, "in", domainValues.ToArray() } };
+        var kwargs = new Dictionary<string, object>
+        {
+            ["fields"] = new[] { "id", domainField },
+            ["context"] = IncludeArchivedContext
+        };
+        var result = await OdooRpcClient.ExecuteKwAsync(model, "search_read", [domain], kwargs, ct);
+        if (result.ValueKind != JsonValueKind.Array) return found;
+
+        foreach (JsonElement record in result.EnumerateArray())
+        {
+            if (!record.TryGetProperty(domainField, out JsonElement key)) continue;
+            string? keyText = key.ValueKind switch
+            {
+                JsonValueKind.String => key.GetString(),
+                JsonValueKind.Number => key.GetRawText(),
+                _ => null
+            };
+            if (keyText != null) found[keyText] = record.GetProperty("id").GetInt32();
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Creates or updates the record in Odoo.
+    /// <para>
+    /// Whether Odoo still holds the record is resolved before the hash is trusted. A matching hash
+    /// only proves these values were accepted once; it says nothing about the record still being
+    /// there. If it was deleted, or the database was restored from a backup, skipping on the hash
+    /// alone leaves it missing forever — and every record that references it failing forever.
+    /// </para>
+    /// <para>
+    /// <paramref name="knownIds"/> is an optional id map from <see cref="FindManyInOdooAsync"/>,
+    /// used in place of a per-record lookup.
+    /// </para>
+    /// </summary>
     protected async Task UpsertInOdooAsync(
         string model, string domainField, object domainValue,
-        Dictionary<string, object> values, string cacheKey, CancellationToken ct)
+        Dictionary<string, object> values, string cacheKey, CancellationToken ct,
+        IReadOnlyDictionary<string, int>? knownIds = null)
     {
-        if (!HashCache.HasChanged(cacheKey, values)) return;
-        int? existingId = await FindInOdooAsync(model, domainField, domainValue, ct);
+        bool changed = HashCache.HasChanged(cacheKey, values);
+
+        int? existingId = knownIds != null
+            ? knownIds.TryGetValue(domainValue.ToString() ?? string.Empty, out int known) ? known : null
+            : await FindInOdooAsync(model, domainField, domainValue, ct);
+
+        // Unchanged and still present is the only case with nothing to do.
+        if (!changed && existingId.HasValue) return;
+
         if (existingId.HasValue)
             await OdooRpcClient.ExecuteKwAsync(model, "write", [new[] { existingId.Value }, values], null, ct);
         else
@@ -292,20 +402,30 @@ public abstract class SyncServiceBase(
     protected async Task ArchiveInOdooAsync(
         string model, string domainField, object domainValue, string cacheKey, CancellationToken ct)
     {
-        var archiveValues = new Dictionary<string, object> { ["active"] = false };
-        if (!HashCache.HasChanged(cacheKey, archiveValues)) return;
+        // Looked up before the hash is consulted, for the same reason as UpsertInOdooAsync: the
+        // hash cannot tell us whether Odoo still has the record, or whether it was un-archived
+        // there since we last wrote it.
         int? existingId = await FindInOdooAsync(model, domainField, domainValue, ct);
-        if (!existingId.HasValue) return;
-        await OdooRpcClient.ExecuteKwAsync(model, "write", new object[] { new[] { existingId.Value }, archiveValues }, null, ct);
+        if (!existingId.HasValue)
+        {
+            // Nothing to archive. Drop any stale hash so the record is re-sent in full if it
+            // ever comes back.
+            HashCache.Remove(cacheKey);
+            return;
+        }
+
+        var archiveValues = new Dictionary<string, object> { ["active"] = false };
+        await OdooRpcClient.ExecuteKwAsync(model, "write", [new[] { existingId.Value }, archiveValues], null, ct);
         HashCache.Commit(cacheKey, archiveValues);
     }
 
     // ── Flat entity poll template ────────────────────────────────────────────
     // Used by Customer, Vendor, and Part — all flat single-table entities.
-    // Returns (newestChangeDate, newestId, processedCount). SQL-level exceptions propagate
-    // to the caller; per-row exceptions are caught and logged so the batch continues.
+    // Returns the cursor the caller should persist plus processed/failed counts. SQL-level
+    // exceptions propagate to the caller; per-row exceptions are caught and logged so the
+    // batch continues.
 
-    protected async Task<(DateTime? newestChangeDate, long? newestId, int processed)> PollFlatEntityAsync(
+    protected async Task<(CursorTracker cursor, int processed, int failed)> PollFlatEntityAsync(
         string entityName,
         string sqlTable,
         string sqlIdColumn,
@@ -322,11 +442,8 @@ public abstract class SyncServiceBase(
         CancellationToken cancellationToken)
     {
         int processed = 0;
-        DateTime? newestChangeDate = null;
-        long? newestId = null;
-        // A failed row holds the cursor; otherwise a later success in the same batch
-        // moves past it and the failed record is never queried again.
-        bool cursorBlocked = false;
+        int failed = 0;
+        var cursor = new CursorTracker();
 
         string cs = EnsureTrustServerCertificate(AppSettings.Sql.ConnectionString);
         await using var conn = new SqlConnection(cs);
@@ -347,10 +464,11 @@ public abstract class SyncServiceBase(
         while (await reader.ReadAsync(cancellationToken))
         {
             long id = 0;
+            DateTime? changeDate = null;
             try
             {
                 id = Convert.ToInt64(reader[sqlIdColumn]);
-                DateTime changeDate = ParseChangeDate(reader, changeDateOrdinal, id, entityName, logger);
+                changeDate = ParseChangeDate(reader, changeDateOrdinal, id, entityName, logger);
                 object domainValue = getDomainValue(id);
                 string cacheKey = $"{cacheKeyPrefix}:{domainValue}";
 
@@ -370,18 +488,15 @@ public abstract class SyncServiceBase(
 
                 MarkRowSucceeded(entityName, id);
                 processed++;
-                if (!cursorBlocked)
-                {
-                    newestChangeDate = changeDate;
-                    newestId = id;
-                }
+                cursor.Advance(changeDate.Value, id);
             }
             catch (Exception ex)
             {
-                if (ShouldHoldCursorAfterFailure(entityName, id, ex, logger)) cursorBlocked = true;
+                failed++;
+                HandleRowFailure(entityName, id, changeDate, cursor, ex, logger);
             }
         }
 
-        return (newestChangeDate, newestId, processed);
+        return (cursor, processed, failed);
     }
 }
